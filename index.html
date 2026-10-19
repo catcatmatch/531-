@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#121712">
+  <meta name="description" content="나의 5/3/1 기록, 중량, 운동과 휴식 타이머. 스마트폰 오프라인 사용 가능한 개인 운동 도우미.">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="531 TRAIN">
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
+  <link rel="icon" type="image/png" href="./icons/icon-192.png">
+  <link rel="stylesheet" href="./style.css">
+  <title>531 TRAIN · 스트렝스 트래커</title>
+</head>
+<body>
+<div id="app">
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark">5<span>3</span>1</span><div><b>STRENGTH LOG</b><small>TRAIN SMART · RECOVER WELL</small></div></div>
+    <button class="icon-btn" id="quick-settings" aria-label="설정 열기">⚙</button>
+  </header>
+  <main class="app-main">
+    <section class="view" id="view-today" aria-labelledby="today-title"></section>
+    <section class="view hidden" id="view-week"></section>
+    <section class="view hidden" id="view-timers"></section>
+    <section class="view hidden" id="view-history"></section>
+    <section class="view hidden" id="view-settings"></section>
+  </main>
+  <div class="floating-timer" id="floating-timer" hidden>
+    <div class="ft-meta"><span id="ft-label">휴식</span><small id="ft-phase"></small></div>
+    <strong id="ft-time">03:00</strong><div class="ft-actions"><button data-timer-action="pause">일시정지</button><button data-timer-action="plus">+30초</button><button data-timer-action="stop" aria-label="타이머 종료">✕</button></div>
+  </div>
+  <nav class="bottom-nav" aria-label="메인 메뉴">
+    <button data-tab="today" class="active"><span class="nav-symbol">◉</span><span>오늘</span></button>
+    <button data-tab="week"><span class="nav-symbol">▦</span><span>주간</span></button>
+    <button data-tab="timers"><span class="nav-symbol">◴</span><span>타이머</span></button>
+    <button data-tab="history"><span class="nav-symbol">▤</span><span>기록</span></button>
+    <button data-tab="settings"><span class="nav-symbol">☷</span><span>설정</span></button>
+  </nav>
+  <div id="toast" role="status" aria-live="polite"></div>
+</div>
+<script src="./logic.js"></script>
+<script src="./app.js"></script>
+</body>
+</html>
