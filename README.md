@@ -1,18 +1,26 @@
-# 531 TRAIN — GitHub Pages 업로드용
+# 531 TRAIN — GitHub Pages 업데이트 (왕복 총 60m 확정 · 등/복근 교대 버전)
 
-이 ZIP 파일을 **GitHub 저장소에 그대로 업로드하지 마세요.**
-압축을 풀어 나온 `index.html`, `app.js`, `logic.js`, `style.css`, `sw.js`, `manifest.webmanifest`, `icons` 폴더, `.nojekyll`을 **저장소 최상위**에 업로드하세요.
+## 업로드 위치
+GitHub 저장소: `https://github.com/catcatmatch/531-`
+GitHub Pages 예상 경로: `https://catcatmatch.github.io/531-/`
 
-1. GitHub > New repository > 이름 `531-train` > Public > Create repository.
-2. 저장소 Code 탭 > Add file > Upload files > 압축 해제한 파일과 `icons` 폴더 전부 업로드 > Commit changes.
-3. Settings > Pages > Source: Deploy from a branch > Branch: `main` > Folder: `/(root)` > Save.
-4. 최대 10분 정도 기다렸다가 `https://<사용자아이디>.github.io/531-train/` 접속.
-5. Android Chrome: 앱 설치/홈 화면에 추가. iPhone Safari: 공유 > 홈 화면에 추가.
+1. ZIP 압축을 해제합니다. `index.html`, `app.js`, `logic.js`, `style.css`, `sw.js`, `manifest.webmanifest`, `icons/`, `.nojekyll` 등이 최상위에 있어야 합니다.
+2. GitHub 저장소 > Add file > Upload files에서 **압축 해제된 내용물**을 업로드합니다. 기존 동명 파일은 교체합니다.
+3. Commit changes를 누르면 GitHub Pages가 재배포됩니다.
+4. 스마트폰에서 새로고침하고, 여전히 예전 화면이면 앱을 완전히 닫았다 다시 실행하거나 한 번 더 새로고침합니다. 서비스 워커 캐시가 v3로 바뀝니다.
 
-모든 자산 경로는 상대경로로 작성하여 GitHub Pages의 `/531-train/` 같은 하위 주소에 맞게 동작합니다.
+## 업데이트 내용
+- 30분 존2 걷기 및 심박수 화면 제거. 선택적 준비 걷기 5분은 유지.
+- 보조운동은 운동일마다 **등 → 복근 → 등 → 복근 → 등 → 복근**, 휴식일 제외.
+  - 등 기본: 인버티드 로우 3×8, 추후 설정에서 풀업으로 전환 가능.
+  - 복근 기본: 행잉 니레이즈 3×6, 추후 설정에서 행잉 레그레이즈로 전환 가능.
+  - 두 운동 모두 세트 간 휴식 90초.
+- 터키시 겟업: 1×10회(좌5/우5), 완료 뒤 휴식 2분. 기술 운동의 20분 타이머 유지.
+- 파머스 캐리: **편도 30m + 돌아오기 30m = 왕복 총 60m × 3세트**, **덤벨 한 손 12.5kg씩(양손 총 25kg)**, 세트 간 2분 휴식. 총 180m. 다음 날 회복이 양호하면 15kg씩 진행. 왕복 거리·세트·중량 조절 가능.
+- 기존 5/3/1, 3/5/1, TM, 조커·위도우, 세트별 휴식·타바타·자동 주차 전환 기능 유지.
 
-## 주의
-- GitHub Pages 공개 사이트의 앱 **소스코드**는 공개됩니다.
-- 앱에 입력한 운동 기록은 기본적으로 해당 스마트폰/브라우저의 로컬 저장소에만 남고, GitHub 저장소에 자동 업로드되지 않습니다. 기기 변경 전 앱의 JSON 백업 메뉴를 사용하세요.
-- 브라우저/PWA는 백그라운드 알림음과 진동을 보장하지 않습니다. 타이머는 돌아오면 종료시각을 기준으로 다시 표시됩니다.
-- 5/3/1·3/5/1 진행주차 및 TM은 앱 설정에서 변경할 수 있습니다.
+## 기록 보존과 주의
+- 기존 저장 키(`531_train_kr_v1`)를 유지하고 새 옵션을 병합하므로 **동일 브라우저·동일 URL에서 덮어써 업데이트하면 예전 기록을 유지**합니다.
+- 그래도 업데이트 전 **기록 > JSON 백업** 권장. 브라우저 데이터 삭제·URL 변경은 기록 손실 위험이 있습니다.
+- 앱 데이터는 GitHub에 동기화되지 않고 기기 로컬 저장소에 남습니다.
+- PWA는 화면을 잠근 상태에서 알림·소리·진동을 보장하지 않습니다. 복귀 시 시각을 기준으로 타이머가 복원됩니다.

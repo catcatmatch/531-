@@ -11,10 +11,33 @@
   {id:'tgu',label:'컨디셔닝 A',kind:'condition',mobility:'걷기 5분',activity:'터키시 겟업',timerKind:'tgu'},
   {id:'dead',label:'데드리프트',kind:'lift',lift:'dead',mobility:'Agile 8',warmDesc:'고관절과 허리 주변 가동성 · 약 6~8분'},
   {id:'press',label:'OHP',kind:'lift',lift:'press',mobility:'오버헤드 슈러그',warmDesc:'빈 봉 또는 가벼운 부하 2세트 × 10회'},
-  {id:'carry',label:'컨디셔닝 B',kind:'condition',mobility:'걷기 5분',activity:'수트케이스 캐리',timerKind:'carry'},
+  {id:'carry',label:'컨디셔닝 B',kind:'condition',mobility:'걷기 5분',activity:'파머스 캐리',timerKind:'carry'},
   {id:'rest',label:'휴식',kind:'rest'}
  ];
  const WEEK_DAYS=['월','화','수','목','금','토','일'];
+ // Six training days per week: back → abs → back → abs → back → abs.
+ const ASSISTANCE={
+  inverted:{key:'inverted',label:'인버티드 로우',category:'등',reps:[8,8,8],tip:'안정적으로 고정된 바를 사용하세요. 힘들면 바를 높이고 무릎을 굽혀 난이도를 낮추세요.'},
+  pullup:{key:'pullup',label:'풀업',category:'등',reps:[1,1,2],tip:'총 반복수를 누적하되 실패하지 마세요. 필요하면 밴드나 보조 머신을 활용하세요.'},
+  knee:{key:'knee',label:'행잉 니레이즈',category:'복근',reps:[6,6,6],tip:'흔들림을 줄여 무릎을 천천히 올리세요. 매달리기가 어렵다면 보조형 니레이즈를 이용하세요.'},
+  leg:{key:'leg',label:'행잉 레그레이즈',category:'복근',reps:[4,4,4],tip:'몸통이 흔들리지 않는 범위에서 다리를 들어 올리세요.'}
+ };
+ function assistanceForDay(dayId,settings={}){
+  const idx=DAYS.findIndex(d=>d.id===dayId);
+  if(idx<0||DAYS[idx].kind==='rest')return null;
+  const category=idx%2===0?'등':'복근';
+  const choice=category==='등'?(settings.backExercise||'inverted'):(settings.coreExercise||'knee');
+  const safe=(category==='등'&&['inverted','pullup'].includes(choice))||(category==='복근'&&['knee','leg'].includes(choice))?choice:(category==='등'?'inverted':'knee');
+  return {...ASSISTANCE[safe]};
+ }
+ function carryPlan(settings={}){
+  // carryDistance means one complete out-and-back distance, NOT the one-way distance.
+  const roundTrip=Number(settings.carryDistance)>0?Number(settings.carryDistance):60;
+  const sets=Number.isInteger(Number(settings.carrySets))&&Number(settings.carrySets)>=1?Math.min(6,Number(settings.carrySets)):3;
+  const perHand=Number(settings.carryWeight)>0?Number(settings.carryWeight):12.5;
+  const rest=Number(settings.carryRest)>=30?Number(settings.carryRest):120;
+  return {oneWay:roundTrip/2,roundTrip,sets,perHand,rest,totalDistance:roundTrip*sets};
+ }
  function scheme(mode,week){
   if(week===4)return {name:'디로드',labels:['40%','50%','60%'],pcts:[.40,.50,.60],reps:[5,5,5],pr:false};
   if(week===3)return {name:'1+ 주간',labels:['75%','85%','95%'],pcts:[.75,.85,.95],reps:[5,3,1],pr:true};
@@ -51,15 +74,15 @@
  function zone2(age){const a=Number(age);if(!Number.isFinite(a)||a<16||a>90)return null;const max=220-a;return {max,low:Math.round(max*.60),high:Math.round(max*.70)};}
  const GUIDES={
   tgu:[
-   {start:0,end:240,title:'동작 익히기',detail:'맨손으로 굴러 팔꿈치 → 손 짚기 → 브리지 자세를 좌우 2회씩 천천히 연습'},
-   {start:240,end:540,title:'하프 겟업',detail:'누운 자세에서 하프 니링까지 좌우 1회씩 2~3라운드. 팔은 수직으로 유지'},
-   {start:540,end:1020,title:'전체 동작 연습',detail:'맨손 또는 아주 가벼운 도구로 좌우 1회씩 2~3라운드. 속도보다 기술'},
-   {start:1020,end:1200,title:'점검과 정리',detail:'무릎과 어깨 상태 확인, 가벼운 동작 복습. 지쳤다면 여기서 종료'}
+   {start:0,end:180,title:'기술 준비',detail:'맨손 연습과 어깨 안정성 확인. 처음이라면 숙련자의 동작 지도를 권장'},
+   {start:180,end:960,title:'터키시 겟업 1×10회',detail:'좌우 5회씩, 총 10회. 횟수를 서두르지 말고 안전한 자세로 수행'},
+   {start:960,end:1080,title:'휴식 2분',detail:'1세트 뒤 2분 회복. 1×10만 할 계획이라면 여기서 마무리해도 됩니다'},
+   {start:1080,end:1200,title:'정리·기록',detail:'어깨·허리 상태 확인, 총 10회 완료 여부 기록'}
   ],
   carry:[
-   {start:0,end:240,title:'가벼운 리허설',detail:'한 손 5~10kg으로 좌우 10~15m씩 걷기, 수평 자세와 걸음 점검'},
-   {start:240,end:960,title:'좌우 교대 캐리',detail:'한 손 10~15kg부터: 왼쪽 20m + 오른쪽 20m, 45~75초 쉼. 4~6라운드'},
-   {start:960,end:1200,title:'가볍게 마무리',detail:'덤벨을 내려놓고 천천히 걸으면서 호흡 정리. 불균형과 악력 피로 기록'}
+   {start:0,end:180,title:'움직임 준비',detail:'가벼운 덤벨로 짧은 거리 걷고 방향 전환을 점검'},
+   {start:180,end:990,title:'60m 왕복 파머스 캐리',detail:'편도 30m + 복귀 30m = 왕복 60m를 1세트로 계산. 기본 3세트, 세트 사이 2분'},
+   {start:990,end:1200,title:'회복·기록',detail:'그립·허리 피로 확인. 여유가 있을 때만 세트나 중량 증가'}
   ]
  };
  function buildTabata(work,rest,rounds,sets,between){
@@ -77,7 +100,7 @@
    if(elapsed<phases[i].seconds)return {...phases[i],index:i,remaining:phases[i].seconds-elapsed};elapsed-=phases[i].seconds;
   }return {name:'완료',kind:'done',seconds:0,index:phases.length,remaining:0};}
  function cycleAfter(cycle,week,deload){const maxWeek=deload?4:3;return week>=maxWeek?{cycle:cycle+1,week:1,newCycle:true}:{cycle,week:week+1,newCycle:false};}
- const api={LOAD_STEP,LIFTS,DAYS,WEEK_DAYS,roundLoad,nfmt,scheme,warmup,mainSets,jokerLoad,widowLoad,recommendation,zone2,GUIDES,buildTabata,getPhase,cycleAfter};
+ const api={LOAD_STEP,LIFTS,DAYS,WEEK_DAYS,ASSISTANCE,assistanceForDay,carryPlan,roundLoad,nfmt,scheme,warmup,mainSets,jokerLoad,widowLoad,recommendation,zone2,GUIDES,buildTabata,getPhase,cycleAfter};
  if(typeof module!=='undefined'&&module.exports)module.exports=api;
  global.FiveThreeOneLogic=api;
  })(typeof window!=='undefined'?window:globalThis);
