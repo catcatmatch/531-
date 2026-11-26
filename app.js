@@ -1,336 +1,72 @@
-(function(){
+/* 531 TRAIN v6 — browser interface; calculation and saved state are separate. */
+(function () {
 'use strict';
-const L=window.FiveThreeOneLogic;
-if(!L){document.body.textContent='프로그램 파일이 완전하지 않습니다. logic.js를 함께 보관하세요.';return;}
-const STORAGE='531_train_kr_v1';
-const DEFAULT={version:3,mode:'351',week:1,cycle:1,tm:{squat:127.5,bench:82.5,dead:135,press:52.5},settings:{age:'',bodyweight:101,autoTM:false,deload:true,sound:true,vibrate:true,tabWork:20,tabRest:10,tabRounds:8,tabSets:1,tabBetween:60,backExercise:'inverted',coreExercise:'knee',carryWeight:12.5,carrySets:3,carryDistance:60,carryRest:120},sessions:{},history:[],timer:null};
-const clone=x=>JSON.parse(JSON.stringify(x));
-const load=()=>{try{
- const s=JSON.parse(localStorage.getItem(STORAGE));if(!s||typeof s!=='object')return clone(DEFAULT);
- const prior=Number(s.version)||1,oldSettings=s.settings||{};
- const settings={...DEFAULT.settings,...oldSettings};
- // V1 had no distance/sets controls; V2 meant one-way distance. V3 stores total round-trip distance.
- if(prior<3){
-  if(prior===1&&Number(settings.carryWeight)===10)settings.carryWeight=12.5;
-  if(prior===2&&Number(oldSettings.carryDistance)!==60&&Number(oldSettings.carryDistance)>0)settings.carryDistance=Number(oldSettings.carryDistance)*2;
-  else settings.carryDistance=60;
-  if(prior===1||Number(settings.carrySets)===2)settings.carrySets=3;
- }
- const merged={...clone(DEFAULT),...s,version:3,tm:{...DEFAULT.tm,...s.tm},settings,sessions:s.sessions&&typeof s.sessions==='object'?s.sessions:{},history:Array.isArray(s.history)?s.history:[]};
- if(prior<3){try{localStorage.setItem(STORAGE,JSON.stringify(merged))}catch(_){}}
- return merged;
- }catch(e){return clone(DEFAULT)}};
-let state=load();
-let currentTab='today';
-let activeDay=Math.min(6,(new Date().getDay()+6)%7);
-let toastTimeout=0;
-let installPrompt=null;
-let wakeLock=null;
-let lastPhaseMark='';
-let audioContext=null;
-function save(){try{localStorage.setItem(STORAGE,JSON.stringify(state));}catch(e){notify('저장공간이 부족합니다. 기록을 내보내고 공간을 확보하세요.')}}
-function $(s,r=document){return r.querySelector(s)}
-function $all(s,r=document){return [...r.querySelectorAll(s)]}
-function escapeHTML(s){return String(s??'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));}
-const today=()=>new Date().toLocaleDateString('ko-KR',{year:'numeric',month:'2-digit',day:'2-digit'});
-const rtime=sec=>{const s=Math.max(0,Math.ceil(sec));return String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0')};
-const restTime=sec=>!sec?'마무리':sec%60===0?`${sec/60}분`:`${Math.floor(sec/60)}분 ${sec%60}초`;
-const humanTime=sec=>{sec=Math.max(0,Math.round(sec));const m=Math.floor(sec/60),h=Math.floor(m/60);return h?`${h}시간 ${m%60}분`:`${m}분 ${sec%60}초`};
-const keyFor=(id)=>`${state.cycle}.${state.week}.${id}`;
-const isFiniteNumber=v=>v!==''&&v!==null&&v!==undefined&&Number.isFinite(Number(v));
-function session(id,create=false){
- const key=keyFor(id);let s=state.sessions[key];
- if(!s&&create){s={key,day:id,mode:state.mode,week:state.week,cycle:state.cycle,tm:clone(state.tm),checked:{},actual:{},choice:'skip',rir:'',condition:'보통',notes:'',activities:{},elapsedMs:0,runningSince:null,startedAt:null,completedAt:null,skipped:false};state.sessions[key]=s;save()}
- return s||null;
-}
-function sessionDuration(s){return (!s?0:s.elapsedMs||0)+(s?.runningSince?Math.max(0,Date.now()-s.runningSince):0)}
-function startSession(s){if(!s.startedAt)s.startedAt=Date.now();if(!s.runningSince)s.runningSince=Date.now();save();}
-function pauseSession(s){if(s.runningSince){s.elapsedMs=(s.elapsedMs||0)+Date.now()-s.runningSince;s.runningSince=null;save();}}
-function notify(msg){const el=$('#toast');el.textContent=msg;el.classList.add('show');clearTimeout(toastTimeout);toastTimeout=setTimeout(()=>el.classList.remove('show'),3300)}
-function setTab(tab){if(!['today','week','timers','history','settings'].includes(tab))return;currentTab=tab;
- $all('.view').forEach(el=>el.classList.toggle('hidden',el.id!==`view-${tab}`));
- $all('[data-tab]').forEach(el=>el.classList.toggle('active',el.dataset.tab===tab));
- renderCurrent();window.scrollTo({top:0,behavior:'smooth'});
-}
-function dayInfo(){return L.DAYS[activeDay]}
-function renderCurrent(){if(currentTab==='today')renderToday();else if(currentTab==='week')renderWeek();else if(currentTab==='timers')renderTimers();else if(currentTab==='history')renderHistory();else renderSettings();updateLiveUI()}
-function ctag(text,value='',className=''){return `<span class="badge ${className}">${escapeHTML(text)}${value?' · '+escapeHTML(value):''}</span>`}
-function currentWeekCompleted(){return L.DAYS.filter(d=>d.kind!=='rest').filter(d=>!!session(d.id)?.completedAt).length}
-function weekHeader(){return `<div class="row spread"><div><div class="eyebrow">CYCLE ${String(state.cycle).padStart(2,'0')} / WEEK ${state.week}</div><h1 class="page-title" id="today-title">나의 스트렝스 루틴</h1></div>${ctag(state.mode==='351'?'3/5/1':'5/3/1')}</div>
-<div class="mode-switch" role="group" aria-label="훈련 모드"><button type="button" data-mode="531" class="${state.mode==='531'?'active':''}">5/3/1</button><button type="button" data-mode="351" class="${state.mode==='351'?'active':''}">3/5/1</button></div>
-<div class="weekstrip">${L.DAYS.map((d,i)=>{const s=session(d.id);return `<button class="day-chip ${i===activeDay?'active':''} ${s?.completedAt?'complete':''}" data-day="${i}" title="${d.label}"><b>${L.WEEK_DAYS[i]}</b><span class="day-status"></span></button>`}).join('')}</div>`}
-function daySessionBanner(s,d){const desc=d.kind==='lift'?'기본 메인 3세트 · 추가운동 선택 가능':d.kind==='condition'?'기술운동 20분 한도 · 별도 30분 걷기 없음':'회복하는 날';
- return `<div class="section-head"><h3>${L.WEEK_DAYS[activeDay]}요일 · ${escapeHTML(d.label)}</h3>${s?.completedAt?ctag('완료','',''):ctag('진행 전','','gray')}</div><p class="subtitle" style="margin-top:-3px">${desc}</p>`}
-function mainTabButtons(s){if(!s||s.completedAt)return '';return `<div class="row spread" style="margin:8px 0 17px"><div><small class="small">총 운동 시간</small><div class="metric" style="font-size:20px" data-elapsed>${humanTime(sessionDuration(s)/1000)}</div></div><div class="btn-group"><button class="btn tiny ${s.runningSince?'outline':''}" data-act="session-toggle">${s.runningSince?'⏸ 시간 일시정지':'▶ 시간 시작'}</button></div></div>`}
-function setRow(r,s,group){const actual=s?.actual?.[r.id]??'';const checked=!!s?.checked?.[r.id];const target=r.kg!==undefined?`${L.nfmt(r.kg)}kg`:'맨몸';const pr=r.pr?' · PR':(r.pct&&group==='warm'?` · ${Math.round(r.pct*100)}%`:'');
- return `<div class="set-row ${checked?'checked':''}">
-   <input class="checkbox" type="checkbox" aria-label="${escapeHTML(r.label)} 완료" data-checked="${r.id}" ${checked?'checked':''} ${s?.completedAt?'disabled':''}>
-   <div><div class="set-top ${r.pr?'emphasis':''}">${target} × ${r.reps}${r.pr?'+':''}${r.unit||'회'}</div><div class="set-sub">${escapeHTML(r.label)}${pr} · 세트 후 ${r.rest?restTime(r.rest)+' 휴식':'마무리'}</div></div>
-   <div class="rep-entry"><input class="input number-input" type="number" min="0" step="1" value="${escapeHTML(actual)}" placeholder="실제" inputmode="numeric" aria-label="${escapeHTML(r.label)} 실제 반복수" data-reps="${r.id}" ${s?.completedAt?'disabled':''}></div>
- </div>`}
-function itemRows(rows,s,g){return `<div class="set-list">${rows.map(r=>setRow(r,s,g)).join('')}</div>`}
-function assistInfo(d){return L.assistanceForDay(d.id,state.settings)}
-function assistRows(d){const a=assistInfo(d);if(!a)return [];return a.reps.map((n,i)=>({id:'assist'+i,label:`${a.label} ${i+1}세트`,reps:n,rest:i<2?90:0}));}
-function skillRows(d){
- if(d.timerKind==='tgu')return [{id:'tgu0',label:'겟업 · 좌우 각각 5회',reps:10,rest:120}];
- const cp=L.carryPlan(state.settings);
- return Array.from({length:cp.sets},(_,i)=>({id:'carry'+i,label:`파머스 캐리 ${i+1}세트 · 왕복 ${L.nfmt(cp.roundTrip)}m (편도 ${L.nfmt(cp.oneWay)}m)`,kg:cp.perHand,reps:cp.roundTrip,unit:'m',rest:i<cp.sets-1?cp.rest:0}));
-}
-function mobilityPanel(s,d){let content='';
- if(d.mobility==='Agile 8')content=`<details><summary class="small">Agile 8 동작 자세히 보기 ▾</summary><p>폼롤러(허벅지 외측·내전근) → 둔근 가동성 → 롤오버 → 파이어 하이드런트 → 마운틴 클라이머 → 그로이너 → 고관절 신전근 스트레칭. 무리 없는 범위로 약 6~8분.</p></details>`;
- else if(d.mobility==='덤벨 풀오버')content='<p>어깨 통증 없는 가벼운 덤벨로 10회 × 2세트. 벤치프레스를 위한 준비이며 무겁게 실시하지 않습니다.</p>';
- else if(d.mobility==='오버헤드 슈러그')content='<p>빈 봉이나 가벼운 중량에서 견갑골을 위로 올렸다 내리는 동작 10회 × 2세트. 어깨 통증이 있으면 생략합니다.</p>';
- return `<div class="card subtle"><div class="row spread"><div><div class="eyebrow">MOVEMENT PREP</div><h3 style="margin-top:5px">${escapeHTML(d.mobility)}</h3></div><label class="row" style="font-size:12px"><input type="checkbox" class="checkbox" data-mobility ${s?.activities?.mobility?'checked':''} ${s?.completedAt?'disabled':''}> 완료</label></div>${content||`<p>${escapeHTML(d.warmDesc)}</p>`}</div>`;
-}
-function selectedPlan(s,d){let mode=s?.mode||state.mode,tm=(s?.tm||state.tm)[d.lift];return {scheme:L.scheme(mode,state.week),warm:L.warmup(d.lift,tm),main:L.mainSets(mode,state.week,tm),tm,mode};}
-function recommendationFor(s,plan){return L.recommendation({mode:plan.mode,week:state.week,prReps:s?.actual?.main2??'',rir:s?.rir??'',condition:s?.condition||'보통'});}
-function radioChoice(s,prop,values){return `<div class="option-group">${values.map(v=>`<button type="button" data-radio="${prop}" data-radio-value="${escapeHTML(v.value)}" class="${(s?.[prop]||'')===v.value?'selected':''}" ${s?.completedAt?'disabled':''}>${escapeHTML(v.label)}</button>`).join('')}</div>`}
-function addonPanel(s,plan){if(!plan.scheme.pr)return `<div class="card subtle"><h3>이번 주 추가운동: 생략</h3><p>PR 세트가 없으므로 Joker·Widowmaker는 진행하지 않습니다. 마지막 메인 세트의 여유는 기록하세요.</p><div class="grid2"><label><span class="small">마지막 세트 RIR</span><select class="input" data-field="rir"><option value="">선택</option>${[0,1,2,3,4].map(x=>`<option value="${x}" ${String(s?.rir??'')===String(x)?'selected':''}>${x===4?'4회 이상':`${x}회`}</option>`).join('')}</select></label><label><span class="small">컨디션</span><select class="input" data-field="condition">${['좋음','보통','나쁨'].map(x=>`<option ${x===(s?.condition||'보통')?'selected':''}>${x}</option>`).join('')}</select></label></div></div>`;
- const rec=recommendationFor(s,plan);
- const map={pending:'기록 입력 후 추천',skip:'생략 권장',joker:'조커 권장',widow:'위도우메이커 선택 가능'};
- const selected=s?.choice||'skip';
- const extra=selected==='joker'?{id:'joker',label:'조커 · 목표 1~3회',kg:L.jokerLoad(plan.mode,state.week,plan.tm),reps:state.week===3?1:3,rest:180}:selected==='widow'?{id:'widow',label:'위도우메이커 · 15~20회 이내',kg:L.widowLoad(plan.mode,state.week,plan.tm),reps:15,rest:180}:null;
- return `<div class="card"><h3>메인 이후 추가운동</h3><div class="grid2"><label><span class="small">PR 마지막 세트 RIR</span><select class="input" data-field="rir"><option value="">선택</option>${[0,1,2,3,4].map(x=>`<option value="${x}" ${String(s?.rir??'')===String(x)?'selected':''}>${x===4?'4회 이상':`${x}회`}</option>`).join('')}</select></label><label><span class="small">컨디션</span><select class="input" data-field="condition">${['좋음','보통','나쁨'].map(x=>`<option ${x===(s?.condition||'보통')?'selected':''}>${x}</option>`).join('')}</select></label></div>
- <div class="rec-card"><div class="row spread"><b id="rec-title">${map[rec.type]}</b>${rec.type==='joker'?ctag('고반복','',''):ctag('선택','','gray')}</div><p id="rec-description">${escapeHTML(rec.reason)}</p></div>
- <div class="small" style="margin-bottom:8px">코치 추천은 참고용입니다. 마지막 선택은 직접 변경할 수 있습니다.</div>
- ${radioChoice(s,'choice',[{value:'joker',label:'조커'},{value:'widow',label:'위도우'},{value:'skip',label:'생략'}])}
- ${extra?`<div style="margin-top:13px">${itemRows([extra],s,'extra')}<p class="footnote">${selected==='joker'?'기본 중량보다 약 5% TM 상승. 실패 반복 금지, 최대 1세트 권장.':'첫 본세트(FSL) 중량에서 15~20회 이내 1세트. 감량·피로 누적 시 생략.'}</p></div>`:''}
- </div>`;
-}
-function renderLift(d,s){const p=selectedPlan(s,d);const pr=p.scheme.pr;
- return `<div class="card special"><div class="card-top"><div><div class="eyebrow">${escapeHTML(p.scheme.name)} · ${escapeHTML(p.mode==='351'?'3/5/1':'5/3/1')}</div><div class="metric">${L.nfmt(p.main[2].kg)}<small>kg × ${p.main[2].reps}${pr?'+':''}회</small></div></div><span class="badge">TM ${L.nfmt(p.tm)}kg</span></div><p>메인 운동 3세트. ${pr?'마지막은 좋은 자세로 PR 반복을 기록하세요.':'이번에는 정해진 횟수에서 종료하세요.'} Joker / Widow는 선택 사항입니다.</p></div>
- ${mobilityPanel(s,d)}
- <div class="section-head"><h3>바벨 워밍업</h3>${ctag('세트 후 1분','','gray')}</div>
- ${itemRows(p.warm,s,'warm')}
- <div class="section-head"><h3>메인 운동</h3>${ctag('세트 후 3분','','gray')}</div>
- ${itemRows(p.main,s,'main')}
- ${addonPanel(s,p)}
- ${assistPanel(s,d)}`;
-}
-function assistPanel(s,d){const a=assistInfo(d);return `<div class="section-head"><h3>${escapeHTML(a.category)} · ${escapeHTML(a.label)} 3세트</h3>${ctag('90초 휴식','','gray')}</div>${itemRows(assistRows(d),s,'assist')}<p class="footnote">등과 복근을 운동일마다 번갈아 수행합니다. ${escapeHTML(a.tip)} 상위 동작으로 바꾸려면 설정에서 변경하세요.</p>`;}
-function activityTimerButton(kind,sec){const labels={tgu:'20분 겟업 타이머 시작',carry:'20분 파머스 캐리 타이머 시작',walking:'5분 준비 타이머',tabata:'타바타 시작'};return `<button class="btn primary" data-start-timer="${kind}" data-seconds="${sec}">◴ ${labels[kind]}</button>`}
-function conditionWorkout(d,s){const kind=d.timerKind,guide=L.GUIDES[kind],cp=L.carryPlan(state.settings);
- const activityName=d.activity;
- const exercise=kind==='tgu'?'1세트 × 10회 (좌우 각 5회) · 2분 휴식':`왕복 전체 ${L.nfmt(cp.roundTrip)}m (편도 ${L.nfmt(cp.oneWay)}m씩) × ${cp.sets}세트 · 덤벨 한 손당 ${L.nfmt(cp.perHand)}kg`;
- return `<div class="card special"><div class="eyebrow">SKILL / CONDITIONING</div><div class="metric" style="font-size:27px">${escapeHTML(activityName)}</div><p>${exercise}. 총 20분은 상한선이며 계획한 운동을 마치면 일찍 종료해도 됩니다.</p></div>
- <div class="card"><div class="row spread"><h3>준비 걷기 · 선택 5분</h3><label class="row small"><input class="checkbox" data-activity="walk" type="checkbox" ${s?.activities?.walk?'checked':''} ${s?.completedAt?'disabled':''}> 완료</label></div>${activityTimerButton('walking',300)}</div>
- <div class="card"><div class="row spread"><h3>${escapeHTML(activityName)} · 20분 한도</h3>${ctag('기술 중심','','gray')}</div>
- <ul class="activity-plan">${guide.map(g=>`<li><span class="mins">${Math.floor(g.start/60)}–${Math.floor(g.end/60)}분</span><span><b>${escapeHTML(g.title)}</b><small>${escapeHTML(g.detail)}</small></span></li>`).join('')}</ul>
- ${kind==='carry'?`<div class="grid2"><label class="field-label">한 손당 중량 (kg)<input class="input" type="number" min="2.5" max="40" step="2.5" value="${cp.perHand}" data-setting="carryWeight"></label><label class="field-label">세트 수<input class="input" type="number" min="1" max="6" step="1" value="${cp.sets}" data-setting="carrySets"></label><label class="field-label">왕복 총거리 (m)<input class="input" type="number" min="10" max="200" step="10" value="${cp.roundTrip}" data-setting="carryDistance"></label><label class="field-label">세트 간 휴식 (초)<input class="input" type="number" min="30" max="600" step="30" value="${cp.rest}" data-setting="carryRest"></label></div><p class="footnote">왕복 전체 ${L.nfmt(cp.roundTrip)}m = 편도 ${L.nfmt(cp.oneWay)}m + 돌아오기 ${L.nfmt(cp.oneWay)}m. 기본 권장: 한 손당 12.5kg(양손 25kg)으로 왕복 60m × 3세트, 휴식 2분. 자세가 안정적이고 다음 날 피로가 적으면 한 손당 15kg으로 천천히 증가하세요.</p>`:'<p class="footnote">겟업은 좌우 각각 5회씩 총 10회이며, 세트가 끝난 뒤 2분 휴식합니다. 한 세트만 수행할 때는 추가 세트를 강요하지 않습니다.</p>'}
- <div class="section-head"><h3>수행 체크</h3>${ctag(kind==='tgu'?'1×10':'왕복 거리','','gray')}</div>${itemRows(skillRows(d),s,'skill')}
- <div class="info-box amber">${kind==='tgu'?'터키시 겟업이 익숙하지 않다면 맨손부터 시작하세요. 어깨·목 통증이 생기면 중단하고, 자세는 숙련된 코치에게 확인하는 편이 좋습니다.':'두 손에 같은 중량을 들고 몸통을 세운 상태로 걷습니다. 방향 전환은 천천히 하고 악력·허리가 무너지기 전에 멈추세요.'}</div>
- <div class="btn-group" style="margin-top:12px">${activityTimerButton(kind,1200)}<button class="btn outline" data-start-timer="rest" data-seconds="120">◴ 2분 휴식</button></div></div>
- ${assistPanel(s,d)}`;
-}
-function renderToday(){const d=dayInfo();const s=session(d.id);const modeForDay=s?.mode||state.mode;
- let html=weekHeader()+daySessionBanner(s,d);
- if(d.kind==='rest')html+=`<div class="card special"><div class="eyebrow">SUNDAY · OFF</div><h2>회복하는 날</h2><p>강아지 산책 등 가벼운 활동은 유지하되, 추가 중량훈련은 권장하지 않습니다. 일요일은 주차 전환 조건에서 자동 제외됩니다.</p></div>`;
- else{
-   html+=mainTabButtons(s);
-   if(s?.completedAt)html+=`<div class="info-box">완료된 훈련입니다. 운동 시간 ${humanTime(sessionDuration(s)/1000)} · 기록 탭에서 확인할 수 있습니다.</div>`;
-   html+=d.kind==='lift'?renderLift(d,s):conditionWorkout(d,s);
-   html+=`<div class="card"><h3>운동 마무리</h3><label class="field-label">컨디션 및 메모</label><textarea class="input" rows="2" data-notes placeholder="통증, 육체노동, 수면, 자세, 운동 메모" ${s?.completedAt?'disabled':''}>${escapeHTML(s?.notes||'')}</textarea>
-   ${!s?.completedAt?`<div class="row" style="justify-content:space-between;margin-top:13px;gap:9px"><button class="btn outline" data-act="session-toggle">${s?.runningSince?'시간 일시정지':'시간 시작'}</button><button class="btn primary flex-1" data-act="complete-day">오늘 운동 완료 ✓</button></div>`:''}
-   <p class="footnote">오늘 완료를 누르면 운동 시간과 세트 기록을 저장합니다. 모든 훈련일(월~토)을 완료하면 다음 주차로 자동 전환합니다.</p></div>`;
- }
- $('#view-today').innerHTML=html;
-}
-function renderWeek(){const count=currentWeekCompleted();let html=`<div class="eyebrow">WEEKLY OVERVIEW</div><h1 class="page-title">주간 진행 현황</h1><p class="subtitle">${state.mode==='351'?'3/5/1':'5/3/1'} 모드 · 사이클 ${state.cycle}, ${state.week}주차. 6개 훈련일이 완료되면 일요일 휴식을 자동으로 건너뛰고 다음 주차로 진행합니다.</p>
- <div class="card special"><div class="row spread"><div><div class="eyebrow">진행률</div><div class="metric">${count}<small> / 6일</small></div></div>${ctag(L.scheme(state.mode,state.week).name)}</div><div class="progress"><div class="progress-fill" style="width:${count/6*100}%"></div></div></div>
- <div class="card">${L.DAYS.map((d,i)=>{const s=session(d.id);const status=d.kind==='rest'?'자유 휴식':s?.completedAt?'완료':s?.startedAt?'진행 중':'대기';const meta=d.kind==='lift'?`${L.LIFTS[d.lift].label} · TM ${L.nfmt((s?.tm||state.tm)[d.lift])}kg · ${assistInfo(d).label}`:d.kind==='condition'?`${d.activity} · ${assistInfo(d).label}`:'별도 완료 버튼 없음';return `<div class="week-card"><div class="week-number">${L.WEEK_DAYS[i]}</div><div class="week-main"><b>${d.label}</b><p>${meta}</p></div><span class="week-stamp" style="color:${s?.completedAt?'var(--lime)':'var(--muted)'}">${status}</span><button class="btn tiny" data-open-day="${i}">열기</button></div>`}).join('')}</div>
- <div class="card"><h3>주차별 메인 세트</h3><div class="stack" style="gap:8px">${[1,2,3,4].filter(w=>state.settings.deload||w!==4).map(w=>{const s=L.scheme(state.mode,w);return `<div class="row spread" style="padding:5px 0"><span class="small">${w}주 · ${s.name}</span><b style="font-size:12px">${s.pcts.map((p,i)=>`${Math.round(p*100)}%×${s.reps[i]}${s.pr&&i===2?'+':''}`).join(' / ')}</b></div>`}).join('')}</div></div>
- <button class="btn outline full" data-act="force-next">휴식·결근 등으로 못 채운 주차 건너뛰기</button>
- <p class="footnote">강제로 주차를 넘기면 현재 진행 중인 기록은 내역에 보존하지만, 미완료 운동을 수행한 것으로 간주하지 않습니다.</p>`;
- $('#view-week').innerHTML=html;
-}
-function renderTimerCore(){const t=state.timer;let timerName=t?.label||'타이머 선택 대기';return `<div class="timer-card"><div class="row spread"><span class="eyebrow" id="timer-name">${escapeHTML(timerName)}</span>${ctag(t?.kind==='tabata'?'TABATA':'CLOCK')}</div>
- <div class="timer-digits" id="timer-digits">${t?rtime(timerRemaining(t)/1000):'00:00'}</div><div class="timer-description" id="timer-phase">${t?'측정 중':'타이머를 시작하세요'}</div>
- <div class="progress" style="margin:14px 0 16px"><div class="progress-fill" id="timer-bar" style="width:100%"></div></div>
- <div class="timer-controls"><button class="btn outline" data-timer-action="pause" id="timer-pause">일시정지</button><button class="btn outline" data-timer-action="plus">+30초</button><button class="btn outline" data-timer-action="stop">종료</button></div>
- <p class="footnote">백그라운드에서는 종료 예정 시각을 저장합니다. 다시 열면 정확한 남은 시간으로 복원되지만 알림·소리의 백그라운드 실행은 운영체제에 따라 보장되지 않습니다.</p></div>`}
-function renderTimers(){const tab=state.settings;
- $('#view-timers').innerHTML=`<div class="eyebrow">TRAINING TOOLS</div><h1 class="page-title">트레이닝 타이머</h1><p class="subtitle">운동 기록과 별도로 사용할 수도 있습니다. 앱을 다시 열면 진행 상태를 복원합니다.</p>
- ${renderTimerCore()}
- <div class="section-head"><h3>빠른 시작</h3></div>
- <div class="stack">${[{kind:'rest',sec:60,name:'워밍업 휴식',desc:'1분'},{kind:'rest',sec:180,name:'메인·조커·위도우 휴식',desc:'3분'},{kind:'rest',sec:90,name:'등·복근 보조운동 휴식',desc:'1분 30초'},{kind:'rest',sec:120,name:'겟업·파머스 캐리 휴식',desc:'2분'},{kind:'tgu',sec:1200,name:'터키시 겟업',desc:'1×10회 · 최대 20분'},{kind:'carry',sec:1200,name:'파머스 캐리',desc:'왕복 총 60m × 기본 3세트'}].map(p=>`<button class="timer-mode-card" data-start-timer="${p.kind}" data-seconds="${p.sec}"><span><b>${p.name}</b><small>${p.desc}</small></span><span class="success">▶</span></button>`).join('')}</div>
- <div class="section-head"><h3>타바타 타이머</h3>${ctag('기본 20:10 × 8','','gray')}</div>
- <div class="card"><div class="grid2"><label><span class="small">운동 (초)</span><input class="input" data-setting="tabWork" type="number" min="5" max="180" value="${tab.tabWork}"></label><label><span class="small">휴식 (초)</span><input class="input" data-setting="tabRest" type="number" min="5" max="120" value="${tab.tabRest}"></label><label><span class="small">라운드</span><input class="input" data-setting="tabRounds" type="number" min="1" max="30" value="${tab.tabRounds}"></label><label><span class="small">세트</span><input class="input" data-setting="tabSets" type="number" min="1" max="10" value="${tab.tabSets}"></label></div>
- <label class="field-label">세트 간 회복 (초)</label><input class="input" type="number" data-setting="tabBetween" min="0" max="300" value="${tab.tabBetween}">
- <button class="btn primary full" style="margin-top:14px" data-start-timer="tabata">▶ 타바타 시작</button><p>준비 5초 후 운동·휴식이 교대로 진행됩니다. 세트 마지막에는 일반 휴식을 생략합니다.</p></div>`;
-}
-function renderHistory(){const records=state.history||[];
- let html=`<div class="eyebrow">ACTIVITY ARCHIVE</div><h1 class="page-title">훈련 기록</h1><p class="subtitle">기록은 현재 사용하는 기기에 저장됩니다. 기기를 바꾸기 전에 JSON 백업을 권장합니다.</p>
- <div class="card"><div class="row spread"><div><div class="eyebrow">저장된 운동</div><div class="metric">${records.length}<small>건</small></div></div><div><div class="eyebrow">누적 운동 시간</div><div class="metric" style="font-size:23px">${humanTime(records.reduce((n,x)=>n+(x.durationMs||0),0)/1000)}</div></div></div></div>
- <div class="btn-group"><button class="btn outline" data-act="export-json">JSON 백업</button><button class="btn outline" data-act="export-csv">CSV 기록</button></div>
- <div class="section-head"><h3>최근 훈련</h3></div>`;
- if(!records.length)html+='<div class="card"><p>저장된 운동이 없습니다. 오늘 탭에서 훈련을 마치고 ‘오늘 운동 완료’를 눌러주세요.</p></div>';
- else html+=records.slice().reverse().map(r=>{const d=L.DAYS.find(x=>x.id===r.day);const summary=r.day!=='rest'?(d?.kind==='lift'?(r.summary?.last||'본운동 완료'):(r.summary?.activity||'컨디셔닝 완료')):'';return `<div class="card"><div class="row spread"><div><div class="eyebrow">C${r.cycle} · W${r.week} · ${escapeHTML(r.mode==='351'?'3/5/1':'5/3/1')}</div><h3 style="margin:7px 0">${escapeHTML(d?.label||r.day)}</h3></div><span class="badge gray">${escapeHTML(r.date)}</span></div><div class="row spread"><span class="small">${escapeHTML(summary)}</span><b style="font-size:12px">${humanTime((r.durationMs||0)/1000)}</b></div>${r.notes?`<p>${escapeHTML(r.notes)}</p>`:''}<details style="margin-top:10px"><summary class="small">상세 세트 기록 펼치기</summary><pre style="white-space:pre-wrap;word-break:break-word;color:var(--muted);font-size:11px;line-height:1.7">${escapeHTML(r.summary?.details||'미기록')}</pre></details></div>`}).join('');
- $('#view-history').innerHTML=html;
-}
-function renderSettings(){let html=`<div class="eyebrow">PERSONAL SETTINGS</div><h1 class="page-title">설정</h1><p class="subtitle">현재 TM은 기존 기록을 반영했습니다. OHP 52.5kg은 최근 훈련 평가 후 조정한 값이며 필요하면 직접 변경할 수 있습니다.</p>
- <div class="card"><h3>훈련 기준 중량 (TM)</h3>${Object.entries(L.LIFTS).map(([id,l])=>`<div class="settings-tm"><label for="tm-${id}">${l.label}</label><div><input id="tm-${id}" class="input" type="number" min="20" max="500" step="2.5" value="${state.tm[id]}" data-tm="${id}"></div></div>`).join('')}
- <div class="line"></div><div class="grid2"><label><span class="small">현재 사이클</span><input class="input" type="number" min="1" max="999" step="1" data-position="cycle" value="${state.cycle}"></label><label><span class="small">현재 주차</span><select class="input" data-position="week">${[1,2,3,4].map(w=>`<option value="${w}" ${state.week===w?'selected':''}>${w}주차${w===4?' · 디로드':''}</option>`).join('')}</select></label></div><p class="footnote">지금 진행 중인 주차로 맞출 수 있습니다. 이미 입력한 다른 주차 기록은 보존됩니다.</p>
- <div class="line"></div><label class="field-label">훈련 모드</label><div class="mode-switch"><button data-mode="531" class="${state.mode==='531'?'active':''}">5/3/1 · 일반</button><button data-mode="351" class="${state.mode==='351'?'active':''}">3/5/1 · 바쁜 시기</button></div>
- <div class="toggle-row"><div><b style="font-size:13px">4주차 디로드 포함</b><div class="footnote">기본 3주 훈련 + 4주차 가벼운 회복</div></div><input type="checkbox" class="toggle" data-toggle="deload" ${state.settings.deload?'checked':''}></div>
- <div class="toggle-row"><div><b style="font-size:13px">새 사이클 TM 자동 증량</b><div class="footnote">하체 +5kg, 상체 +2.5kg. 기본 OFF로 설정</div></div><input type="checkbox" class="toggle" data-toggle="autoTM" ${state.settings.autoTM?'checked':''}></div>
- </div>
- <div class="card"><h3>등·복근 교대 운동 설정</h3><p class="footnote">운동일마다 등 → 복근을 교대로 수행합니다. 하체·상체 종목과 관계없이 적용됩니다.</p>
- <div class="grid2"><label><span class="small">등 운동</span><select class="input" data-setting-choice="backExercise"><option value="inverted" ${state.settings.backExercise!=='pullup'?'selected':''}>인버티드 로우 (현재)</option><option value="pullup" ${state.settings.backExercise==='pullup'?'selected':''}>풀업 (향후)</option></select></label>
- <label><span class="small">복근 운동</span><select class="input" data-setting-choice="coreExercise"><option value="knee" ${state.settings.coreExercise!=='leg'?'selected':''}>행잉 니레이즈 (현재)</option><option value="leg" ${state.settings.coreExercise==='leg'?'selected':''}>행잉 레그레이즈 (향후)</option></select></label></div>
- <div class="line"></div><label class="field-label">현재 체중 (kg)</label><input class="input" type="number" min="30" max="250" step=".1" value="${state.settings.bodyweight}" data-setting="bodyweight"></div>
- <div class="card"><h3>알림과 설치</h3><div class="toggle-row"><div><b style="font-size:13px">타이머 완료 소리</b><div class="footnote">앱이 열린 상태에서 가능</div></div><input type="checkbox" class="toggle" data-toggle="sound" ${state.settings.sound?'checked':''}></div>
- <div class="toggle-row"><div><b style="font-size:13px">진동</b><div class="footnote">브라우저·기기 지원 시</div></div><input type="checkbox" class="toggle" data-toggle="vibrate" ${state.settings.vibrate?'checked':''}></div>
- <div class="btn-group"><button class="btn outline" data-act="enable-notify">알림 권한 요청</button><button class="btn outline" id="install-app" data-act="install">홈 화면에 설치</button></div>
- <div class="info-box amber" style="margin-top:12px">PWA에서는 타이머의 종료 시각과 기록을 보존하지만, 화면 잠금 상태에서 정확한 시점의 소리·진동·알림은 보장하지 않습니다. 확실한 백그라운드 알림에는 네이티브 앱이 필요합니다.</div></div>
- <div class="card"><h3>백업 및 데이터</h3><div class="btn-group"><button class="btn outline" data-act="export-json">백업 내보내기</button><button class="btn outline" data-act="export-csv">CSV 기록 내보내기</button></div><label class="field-label">백업 파일 복원 (.json)</label><input class="input" id="import-json" type="file" accept=".json,application/json"><button class="btn danger-outline" style="margin-top:14px" data-act="reset-data">기록 전체 초기화</button></div>
- <p class="footnote">PWA v1.2 · 광고·외부 계정·서버 전송 없음. 데이터는 브라우저 저장 공간에만 남으므로 삭제 전 반드시 백업하세요.</p>`;
- $('#view-settings').innerHTML=html;
-}
-function updateRecPanel(){if(currentTab!=='today')return;const d=dayInfo();if(d.kind!=='lift')return;const s=session(d.id);const plan=selectedPlan(s,d);const r=recommendationFor(s,plan);
- const title=$('#rec-title'),desc=$('#rec-description');if(title&&desc){title.textContent={pending:'기록 입력 후 추천',skip:'생략 권장',joker:'조커 권장',widow:'위도우메이커 선택 가능'}[r.type];desc.textContent=r.reason;}
-}
-function onCheck(id,checked){const d=dayInfo(),s=session(d.id,true);if(s.completedAt)return;
- startSession(s);s.checked[id]=checked;
- const rows=d.kind==='lift'?[...selectedPlan(s,d).warm,...selectedPlan(s,d).main,...assistRows(d),{id:'joker',reps:3,rest:180},{id:'widow',reps:15,rest:180}]:[...skillRows(d),...assistRows(d)];
- const found=rows.find(x=>x.id===id);
- if(checked&&s.actual[id]===undefined&&found)s.actual[id]=found.reps;
- save();if(checked){const rest=found?.rest??0;if(rest>0)startTimer('rest',rest,`${id.startsWith('assist')?'보조운동':id.startsWith('main')?'메인세트':id==='joker'?'조커':id==='widow'?'위도우메이커':id.startsWith('carry')?'캐리':id.startsWith('tgu')?'겟업':'워밍업'} 후 휴식`);else stopTimer();}renderToday();}
-function completedSummary(d,s){let details=[];let last='';
- if(d.kind==='lift'){
-  const plan=selectedPlan(s,d);
-  for(const r of [...plan.warm,...plan.main])details.push(`${r.label}: ${L.nfmt(r.kg)}kg × ${s.actual[r.id]??'미기록'}회`);
-  const tail=plan.main[2];last=`${L.LIFTS[d.lift].label} ${L.nfmt(tail.kg)}kg × ${s.actual.main2??'미기록'}회`;
-  if(s.choice==='joker'||s.choice==='widow')details.push(`${s.choice==='joker'?'조커':'위도우'}: ${s.choice==='joker'?L.jokerLoad(s.mode,s.week,s.tm[d.lift]):L.widowLoad(s.mode,s.week,s.tm[d.lift])}kg × ${s.actual[s.choice]??'미기록'}회`);
-  details.push(`추가운동 ${s.choice==='skip'?'생략':s.choice}, RIR ${s.rir||'미기록'}`);
- }else{
-  details.push(`준비 걷기(선택): ${s.activities.walk?'완료':'생략'}`);
-  for(const r of skillRows(d))details.push(`${r.label}: ${r.kg?L.nfmt(r.kg)+'kg/손, ':''}목표 ${r.reps}${r.unit||'회'}, 실제 ${s.actual[r.id]??'미기록'}${r.unit||'회'}`);
- }
- const a=assistInfo(d);
- for(let i=0;i<3;i++)details.push(`${a.label} ${i+1}세트: ${s.actual['assist'+i]??'미기록'}회`);
- return {last,activity:d.activity,details:details.join('\n')};
-}
-function completeDay(){const d=dayInfo();if(d.kind==='rest')return;
- const s=session(d.id,true);if(s.completedAt)return;
- const basic=d.kind==='lift'?selectedPlan(s,d).main.map(x=>x.id):skillRows(d).map(x=>x.id);
- const missing=basic.filter(id=>!s.checked[id]);
- if(missing.length&&!window.confirm(`아직 완료되지 않은 핵심 항목 ${missing.length}개가 있습니다. 현재 상태 그대로 훈련을 종료하고 기록할까요?`))return;
- pauseSession(s);s.completedAt=Date.now();s.notes=String(s.notes||'');s.skipped=missing.length>0;
- const rec={id:s.key,day:d.id,cycle:s.cycle,week:s.week,mode:s.mode,tm:clone(s.tm),date:today(),timestamp:s.completedAt,durationMs:s.elapsedMs||0,actual:clone(s.actual),checked:clone(s.checked),activities:clone(s.activities),rir:s.rir,condition:s.condition,choice:s.choice,notes:s.notes,summary:completedSummary(d,s)};
- state.history.push(rec);stopTimer();save();
- const count=currentWeekCompleted();if(count===6){advanceWeek(true);notify('이번 주 완료! 다음 주차로 자동 이동했습니다.')}else{notify(`훈련 저장 완료 · 이번 주 ${count}/6일`);renderToday();}
-}
-function advanceWeek(auto=false){const from={cycle:state.cycle,week:state.week};const result=L.cycleAfter(from.cycle,from.week,state.settings.deload);
- state.cycle=result.cycle;state.week=result.week;
- if(result.newCycle&&state.settings.autoTM){state.tm.squat+=5;state.tm.dead+=5;state.tm.bench+=2.5;state.tm.press+=2.5;}
- activeDay=0;save();renderCurrent();if(!auto)notify(`사이클 ${state.cycle} · ${state.week}주차로 이동`);
-}
-function setMode(mode){if(state.mode===mode)return;state.mode=mode;save();notify(`${mode==='351'?'3/5/1':'5/3/1'} 모드 선택 · 시작된 운동은 기존 모드 유지`);renderCurrent();}
-function onChoice(choice){const d=dayInfo(),s=session(d.id,true);if(s.completedAt)return;const p=selectedPlan(s,d);if(!p.scheme.pr){notify('이번 주는 PR 세트가 없어서 추가운동을 생략합니다.');return;}
- if(choice==='joker'||choice==='widow'){const rec=recommendationFor(s,p);if(rec.type==='skip'&&s.actual.main2!==undefined&&!window.confirm('회복 상태상 추가운동 생략을 권장합니다. 그래도 선택하시겠습니까?'))return;}
- s.choice=choice;save();renderToday();}
-function startTimer(kind,seconds,label){let sec=Number(seconds)||180,phases=null;
- if(kind==='tabata'){const c=state.settings;phases=L.buildTabata(Number(c.tabWork),Number(c.tabRest),Number(c.tabRounds),Number(c.tabSets),Number(c.tabBetween));sec=phases.reduce((a,p)=>a+p.seconds,0);label='타바타';}
- const names={rest:'휴식',tgu:'터키시 겟업',carry:'파머스 캐리',walking:'준비 걷기',tabata:'타바타'};
- state.timer={kind,label:label||names[kind]||'타이머',durationMs:sec*1000,remainingMs:sec*1000,endAt:Date.now()+sec*1000,running:true,finished:false,phases,alerted:false};
- lastPhaseMark='';save();requestWake();updateLiveUI();if(currentTab==='timers'){renderTimers();updateLiveUI();}notify(`${label||names[kind]} 타이머 시작`);
-}
-function stopTimer(){if(state.timer){state.timer=null;releaseWake();save();updateLiveUI()}}
-function timerRemaining(t){if(!t)return 0;return t.running?Math.max(0,t.endAt-Date.now()):t.remainingMs||0;}
-function timerControl(cmd){const t=state.timer;if(!t)return;
- if(cmd==='pause'){if(t.running){t.remainingMs=timerRemaining(t);t.running=false;notify('타이머 일시정지');}}
- else if(cmd==='resume'){if(!t.running){t.endAt=Date.now()+(t.remainingMs||t.durationMs);t.running=true;notify('타이머 재개');}}
- else if(cmd==='plus'){t.remainingMs=timerRemaining(t)+30000;t.durationMs+=30000;if(t.running)t.endAt=Date.now()+t.remainingMs;}
- else if(cmd==='stop'){state.timer=null;releaseWake();notify('타이머 종료');}
- save();if(currentTab==='timers')renderTimers();updateLiveUI();
-}
-async function requestWake(){try{if('wakeLock'in navigator&&document.visibilityState==='visible'){wakeLock=await navigator.wakeLock.request('screen');}}catch(e){}}
-async function releaseWake(){try{if(wakeLock){await wakeLock.release();wakeLock=null}}catch(e){}}
-function beep(){if(!state.settings.sound)return;try{const AC=window.AudioContext||window.webkitAudioContext;if(!AC)return;audioContext=audioContext||new AC();const oscillator=audioContext.createOscillator(),gain=audioContext.createGain();oscillator.type='sine';oscillator.frequency.value=660;gain.gain.setValueAtTime(.1,audioContext.currentTime);gain.gain.exponentialRampToValueAtTime(.001,audioContext.currentTime+.25);oscillator.connect(gain).connect(audioContext.destination);oscillator.start();oscillator.stop(audioContext.currentTime+.26);}catch(e){}}
-function alertEnd(t){if(t.alerted)return;t.alerted=true;save();beep();try{if(state.settings.vibrate&&navigator.vibrate)navigator.vibrate([120,90,120]);}catch(e){}
- try{if('Notification'in window&&Notification.permission==='granted'&&navigator.serviceWorker?.controller){navigator.serviceWorker.ready.then(reg=>reg.showNotification('531 TRAIN · 타이머 완료',{body:`${t.label} 시간이 끝났습니다.`,tag:'531-timer',icon:'./icons/icon-192.png'})).catch(()=>{});}else if('Notification'in window&&Notification.permission==='granted'){new Notification('531 TRAIN · 타이머 완료',{body:`${t.label} 시간이 끝났습니다.`})}}catch(e){}
- notify(`${t.label} 타이머가 종료되었습니다.`);
-}
-function tickTimer(){const t=state.timer;if(!t){$('#floating-timer').hidden=true;return;}
- let left=timerRemaining(t);if(t.running&&left<=0){t.running=false;t.remainingMs=0;t.finished=true;left=0;releaseWake();save();alertEnd(t)}
- const v=$('#timer-digits');if(v)v.textContent=rtime(left/1000);
- const elapsed=(t.durationMs-left)/1000;let detail=t.finished?'완료':t.running?'진행 중':'일시정지';
- if(t.kind==='tabata'&&t.phases){const phase=L.getPhase(t.phases,elapsed);detail=`${phase.name} · 남은 ${rtime(phase.remaining)}`;
-   if(t.running&&phase.index!==lastPhaseMark&&lastPhaseMark!==''){beep();if(state.settings.vibrate&&navigator.vibrate)navigator.vibrate(70)}lastPhaseMark=phase.index;
- }else if(t.kind==='tgu'||t.kind==='carry'){const g=L.GUIDES[t.kind].find(x=>elapsed>=x.start&&elapsed<x.end);if(g)detail=g.title+' · '+g.detail;}
- const ph=$('#timer-phase');if(ph)ph.textContent=detail;
- const bar=$('#timer-bar');if(bar)bar.style.width=Math.max(0,Math.min(100,100*left/t.durationMs))+'%';
- const dock=$('#floating-timer');dock.hidden=false;$('#ft-label').textContent=t.label;$('#ft-time').textContent=rtime(left/1000);$('#ft-phase').textContent=detail;
- const pause=$('#timer-pause');if(pause){pause.textContent=t.running?'일시정지':'계속';pause.dataset.timerAction=t.running?'pause':'resume';}
- const dockBtn=$('[data-timer-action="pause"]',dock);if(dockBtn){dockBtn.dataset.timerAction=t.running?'pause':'resume';dockBtn.textContent=t.running?'일시정지':'계속';}
- const elapsedNodes=$all('[data-elapsed]');if(elapsedNodes.length){const s=session(dayInfo().id);elapsedNodes.forEach(e=>e.textContent=humanTime(sessionDuration(s)/1000));}
-}
-function updateLiveUI(){tickTimer();if(!state.timer){const elapsedNodes=$all('[data-elapsed]');if(elapsedNodes.length){const s=session(dayInfo().id);elapsedNodes.forEach(e=>e.textContent=humanTime(sessionDuration(s)/1000));}}}
-function downloadFile(name,type,data){const blob=new Blob([data],{type});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),10000)}
-function exportJSON(){downloadFile('531_train_backup_'+new Date().toISOString().slice(0,10)+'.json','application/json;charset=utf-8',JSON.stringify(state,null,2))}
-function exportCSV(){const q=s=>'"'+String(s??'').replace(/"/g,'""')+'"';const columns=['날짜','사이클','주차','모드','운동','소요시간(분)','메인 최종','RIR','선택 운동','컨디션','메모'];const lines=[columns.map(q).join(',')];for(const r of state.history){lines.push([r.date,r.cycle,r.week,r.mode,L.DAYS.find(x=>x.id===r.day)?.label||r.day,(r.durationMs/60000).toFixed(1),r.summary?.last||r.summary?.activity||'',r.rir,r.choice,r.condition,r.notes].map(q).join(','))}downloadFile('531_train_history_'+new Date().toISOString().slice(0,10)+'.csv','text/csv;charset=utf-8','\uFEFF'+lines.join('\r\n'))}
-function requestNotif(){if(!('Notification'in window)){notify('이 기기 브라우저에서는 웹 알림을 사용할 수 없습니다.');return;}if(!window.isSecureContext){notify('웹 알림은 HTTPS 환경에서 설치 후 사용할 수 있습니다.');return;}Notification.requestPermission().then(r=>notify(r==='granted'?'알림 허용됨 · 백그라운드 전달은 보장되지 않음':'알림 권한이 허용되지 않았습니다.')).catch(()=>notify('알림 권한 요청 실패'))}
-function handleAction(act){if(act==='session-toggle'){const d=dayInfo(),s=session(d.id,true);s.runningSince?pauseSession(s):startSession(s);renderToday();return;}
- if(act==='complete-day')return completeDay();
- if(act==='force-next'){if(window.confirm('아직 완료하지 않은 운동이 있어도 다음 주차로 이동합니다. 계속할까요?'))advanceWeek();return;}
- if(act==='export-json')return exportJSON();if(act==='export-csv')return exportCSV();if(act==='enable-notify')return requestNotif();
- if(act==='install'){if(installPrompt){installPrompt.prompt();installPrompt.userChoice.then(()=>{installPrompt=null});}else notify('Android는 Chrome ⋮ → 앱 설치, iPhone은 Safari 공유 → 홈 화면에 추가를 사용하세요. HTTPS 배포가 필요합니다.');return;}
- if(act==='reset-data'){if(window.confirm('모든 훈련 기록, 타이머, 설정을 초기화합니다. 먼저 JSON 백업을 권장합니다. 초기화할까요?')){state=clone(DEFAULT);save();setTab('today');notify('모든 데이터가 초기화되었습니다.');}return;}
-}
-document.addEventListener('click',ev=>{
- const nav=ev.target.closest('[data-tab]');if(nav){setTab(nav.dataset.tab);return;}
- const sd=ev.target.closest('[data-day]');if(sd){activeDay=Number(sd.dataset.day);renderCurrent();return;}
- const dayOpen=ev.target.closest('[data-open-day]');if(dayOpen){activeDay=Number(dayOpen.dataset.openDay);setTab('today');return;}
- const mode=ev.target.closest('[data-mode]');if(mode){setMode(mode.dataset.mode);return;}
- const radio=ev.target.closest('[data-radio]');if(radio){onChoice(radio.dataset.radioValue);return;}
- const a=ev.target.closest('[data-act]');if(a){handleAction(a.dataset.act);return;}
- const timerStart=ev.target.closest('[data-start-timer]');if(timerStart){
-   const kind=timerStart.dataset.startTimer,sec=Number(timerStart.dataset.seconds||0);
-   if(kind==='tabata'){
-     const s=state.settings;if([s.tabWork,s.tabRest,s.tabRounds,s.tabSets,s.tabBetween].some(x=>!Number.isFinite(Number(x))||Number(x)<0)||Number(s.tabWork)<5||Number(s.tabRounds)<1||Number(s.tabSets)<1){notify('타바타 설정값을 확인하세요.');return;}
-     if(Number(s.tabRounds)>30||Number(s.tabSets)>10){notify('타바타 라운드는 30, 세트는 10 이하로 설정하세요.');return;}
-   }
-   if(currentTab==='today'&&dayInfo().kind!=='rest')startSession(session(dayInfo().id,true));
-   startTimer(kind,sec);return;
- }
- const timerCtrl=ev.target.closest('[data-timer-action]');if(timerCtrl){timerControl(timerCtrl.dataset.timerAction);return;}
-});
-document.addEventListener('change',ev=>{
- const target=ev.target;
- if(target.matches('[data-checked]')){onCheck(target.dataset.checked,target.checked);return;}
- if(target.matches('[data-mobility]')){const s=session(dayInfo().id,true);startSession(s);s.activities.mobility=target.checked;save();return;}
- if(target.matches('[data-activity]')){const s=session(dayInfo().id,true);startSession(s);s.activities[target.dataset.activity]=target.checked;save();return;}
- if(target.matches('[data-setting-choice]')){const k=target.dataset.settingChoice;const allow=k==='backExercise'?['inverted','pullup']:k==='coreExercise'?['knee','leg']:[];if(allow.includes(target.value)){state.settings[k]=target.value;save();notify('운동 종류가 변경되었습니다.');}renderSettings();return;}
- if(target.matches('[data-field]')){const s=session(dayInfo().id,true);s[target.dataset.field]=target.value;save();updateRecPanel();return;}
- if(target.matches('[data-position]')){const kind=target.dataset.position,value=Number(target.value);if(!Number.isInteger(value)||value<1||(kind==='week'&&value>4)||(kind==='cycle'&&value>999)){notify('사이클/주차 입력값을 확인하세요.');renderSettings();return;}if(value!==state[kind]&&window.confirm(`현재 ${kind==='week'?'주차':'사이클'}을 ${value}(으)로 변경할까요? 기존 기록은 유지됩니다.`)){state[kind]=value;save();notify('진행 위치를 변경했습니다.');}renderSettings();return;}
- if(target.matches('[data-toggle]')){state.settings[target.dataset.toggle]=target.checked;save();if(target.dataset.toggle==='deload'&&state.week===4&&!target.checked)notify('4주차 진행 중에는 디로드가 유지됩니다. 다음 사이클부터 3주형으로 적용하세요.');renderSettings();return;}
- if(target.matches('[data-tm]')){const k=target.dataset.tm,v=Number(target.value);if(v>=20&&v<=500){state.tm[k]=L.roundLoad(v);save();notify('TM 저장 · 이미 시작한 운동의 TM은 유지됩니다.');renderSettings();}else{notify('TM은 20~500kg 사이로 입력하세요.');renderSettings();}return;}
- if(target.matches('[data-setting]')){const k=target.dataset.setting;
-   if(k==='age'){const v=Number(target.value);state.settings.age=(target.value===''?'':(v>=16&&v<=90?v:''));}
-   else{const v=Number(target.value);
-    const rules={carryWeight:[2.5,40],carrySets:[1,6],carryDistance:[10,200],carryRest:[30,600]};
-    if(Number.isFinite(v)&&v>=0&&(!rules[k]||(v>=rules[k][0]&&v<=rules[k][1]))){state.settings[k]=k==='carryWeight'?L.roundLoad(v):v;}
-    else{notify('입력값의 범위를 확인하세요.');}
-   }
-   save();if(currentTab==='settings')renderSettings();else if(currentTab==='today'&&dayInfo().kind==='condition')renderToday();else if(currentTab==='timers')renderTimers();return;}
- if(target.id==='import-json'&&target.files&&target.files[0]){
-   const f=target.files[0];f.text().then(v=>{const json=JSON.parse(v);if(!json||!json.sessions||!json.tm||!Array.isArray(json.history))throw Error('파일 형식 불일치');if(!window.confirm('현재 앱 데이터를 백업 파일로 덮어씁니다. 계속할까요?'))return;state={...clone(DEFAULT),...json,settings:{...DEFAULT.settings,...json.settings}};save();setTab('today');notify('백업을 복원했습니다.');}).catch(()=>notify('백업 파일을 읽을 수 없습니다.')).finally(()=>{target.value='';});return;}
-});
-document.addEventListener('input',ev=>{
- const target=ev.target;
- if(target.matches('[data-reps]')){
-  const d=dayInfo(),s=session(d.id,true);if(s.completedAt)return;
-  s.actual[target.dataset.reps]=target.value;startSession(s);save();updateRecPanel();return;
- }
- if(target.matches('[data-notes]')){const s=session(dayInfo().id,true);s.notes=target.value;save();return;}
-});
+const L=window.FiveThreeOneLogic, M=window.TrainModel;
+if(!L||!M){document.body.textContent='앱 파일을 모두 올려주세요. logic.js · model.js · app.js가 필요합니다.';return;}
+const STORAGE='531_train_kr_v1', $=(s,r=document)=>r.querySelector(s), all=(s,r=document)=>Array.from(r.querySelectorAll(s));
+const esc=x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const objectRecord=x=>!!x&&typeof x==='object'&&!Array.isArray(x);
+const validState=x=>objectRecord(x)&&objectRecord(x.tm)&&objectRecord(x.sessions)&&Array.isArray(x.history)&&x.history.every(objectRecord)&&Object.values(x.sessions).every(objectRecord);
+let storageError='',writeError='',rawStored=null,state;
+try { rawStored=localStorage.getItem(STORAGE); const parsed=rawStored===null?null:JSON.parse(rawStored); if(rawStored!==null&&!validState(parsed))throw Error('invalid saved data'); state=M.migrateState(parsed); }
+catch(e){state=M.migrateState(null);storageError='저장 데이터를 읽지 못했습니다. 기존 데이터는 덮어쓰지 않았습니다. 백업 파일을 복원하거나 저장 권한을 확인하세요.';}
+let currentTab='today',toastTimeout,installPrompt=null,wakeLock=null,audioContext=null,lastPhase=-1;
+const days=L.daysForMode(state.mode);
+if(!days.some(d=>d.id===state.activeLift))state.activeLift=M.nextOpenLift(state);
+function storageBanner(){const el=$('#storage-banner');if(!el)return;el.hidden=!(storageError||writeError);el.textContent=storageError||writeError;}
+function save(){if(storageError){storageBanner();return false;}try{localStorage.setItem(STORAGE,JSON.stringify(state));writeError='';storageBanner();return true;}catch(e){writeError='저장 실패: 현재 입력은 이 화면에만 남아 있습니다. 설정에서 JSON 백업을 내려받아 주세요.';storageBanner();notify(writeError);return false;}}
+function notify(message){const el=$('#toast');el.textContent=message;el.classList.add('show');clearTimeout(toastTimeout);toastTimeout=setTimeout(()=>el.classList.remove('show'),4200);}
+const secText=n=>{n=Math.max(0,Math.ceil(n||0));return String(Math.floor(n/60)).padStart(2,'0')+':'+String(n%60).padStart(2,'0');};
+const durationText=n=>{n=Math.floor(Math.max(0,n)/1000);const h=Math.floor(n/3600),m=Math.floor(n%3600/60);return h?`${h}시간 ${m}분 ${n%60}초`:`${m}분 ${n%60}초`;};
+const pctText=n=>Number((n*100).toFixed(3)).toString();
+const exactText=n=>Number(n.toFixed(4)).toString();
+const badge=(t,cls='')=>`<span class="badge ${cls}">${esc(t)}</span>`;
+const active=()=>L.dayById(state.activeLift);
+const get=(create=false)=>M.getSession(state,state.activeLift,create);
+function plan(s=get()){const d=active(),mode=s?.mode||state.mode,week=s?.week||state.week,tm=(s?.tm||state.tm)[d.lift||d.id];return{d,mode,week,tm,scheme:L.scheme(mode,week),warm:L.warmup(d.lift||d.id,tm),main:L.mainSets(mode,week,tm),extra:L.supplementalSets(mode,week,tm,d.lift||d.id,s?.choice||'skip')};}
+function setTab(tab){if(!['today','week','timers','history','settings'].includes(tab))return;currentTab=tab;all('.view').forEach(x=>x.classList.toggle('hidden',x.id!=='view-'+tab));all('[data-tab]').forEach(x=>x.classList.toggle('active',x.dataset.tab===tab));render();window.scrollTo({top:0,behavior:'instant'});}
+function render(){({today:renderToday,week:renderWeek,timers:renderTimers,history:renderHistory,settings:renderSettings})[currentTab]();tick();}
+function modeButtons(){return `<div class="mode-switch" role="group" aria-label="프로그램 선택">${['531','351'].map(x=>`<button data-mode="${x}" class="${state.mode===x?'active':''}" aria-pressed="${state.mode===x}">${L.modeLabel(x)}</button>`).join('')}</div>`;}
+function sessionStrip(){return `<div class="session-strip" aria-label="훈련 선택">${L.daysForMode(state.mode).map((d,i)=>{const s=M.getSession(state,d.id);return`<button data-lift="${d.id}" class="session-chip ${d.id===state.activeLift?'active':''} ${s?.completedAt?'complete':''}" aria-pressed="${d.id===state.activeLift}"><span>${['스쿼트','벤치','데드','OHP'][i]}</span><small>${s?.completedAt?'완료':s?.startedAt?'진행 중':'대기'}</small></button>`;}).join('')}</div>`;}
+function setRow(row,s,type){const checked=!!s?.checked?.[row.id],done=!!s?.completedAt;return `<div class="set-row ${checked?'checked':''}"><input type="checkbox" class="checkbox" data-check="${row.id}" aria-label="${esc(row.label)} 완료" ${checked?'checked':''} ${done?'disabled':''}><div><div class="set-top ${row.pr?'emphasis':''}">${L.nfmt(row.kg)}<span class="unit"> kg</span> × ${row.reps}${row.pr?'+':''}<span class="unit"> 회</span></div><div class="set-sub">${esc(row.label)}${row.pr?' · PR':''} · 휴식 ${row.rest/60}분</div>${type==='joker'?`<div class="set-sub">계산 ${exactText(row.exactKg)}kg · TM ${pctText(row.pct)}%</div>`:''}</div><label class="rep-entry"><span class="sr-only">${esc(row.label)} 실제 횟수</span><input class="input number-input" type="number" min="0" step="1" inputmode="numeric" placeholder="횟수" data-reps="${row.id}" value="${esc(s?.actual?.[row.id]??'')}" ${done?'disabled':''}></label></div>`;}
+const rows=(list,s,type)=>`<div class="set-list">${list.map(r=>setRow(r,s,type)).join('')}</div>`;
+function addonPanel(s,p){const choice=s?.choice||'skip',options=[['joker1','조커 1'],['joker2','조커 2'],['joker3','조커 3'],['fsl','FSL'],['skip','생략']];return `<section class="card addon-card"><div class="section-head compact"><div><div class="eyebrow">보조운동 1</div><h3>추가 세트 선택</h3></div>${badge('휴식 3분','gray')}</div><div class="addon-options" role="group" aria-label="보조운동 1 선택">${options.map(([id,label])=>`<button data-choice="${id}" class="${choice===id?'selected':''}" aria-pressed="${choice===id}" ${s?.completedAt||(!p.scheme.pr&&id.startsWith('joker'))?'disabled':''}>${label}</button>`).join('')}</div>${!p.scheme.pr?'<p class="footnote">이번 주는 PR 세트가 없어 조커를 선택하지 않습니다.</p>':''}${choice.startsWith('joker')&&p.scheme.pr?`<p>각 세트 1회 · TM 비율을 7.5%포인트씩 높입니다.</p>${rows(p.extra,s,'joker')}<p class="footnote">사용 중량은 2.5kg 단위 반올림입니다.</p>`:choice==='fsl'?`<p>첫 메인세트 중량 · ${['bench','press'].includes(state.activeLift)?'상체 5세트 × 8회':'하체 5세트 × 4회'}</p>${rows(p.extra,s,'extra')}`:'<p class="footnote">컨디션에 맞춰 한 가지를 선택하세요.</p>'}</section>`;}
+function pullupPanel(s){const stats=M.weekPullups(state),best=M.pullupBest(state),sets=s?.pullupSets||[],todayTotal=sets.reduce((a,b)=>a+Number(b||0),0),goal=stats.goal;return `<section class="card pullup-card"><div class="section-head compact"><div><div class="eyebrow">보조운동 2</div><h3>풀업 누적 기록</h3></div>${badge('휴식 1분','gray')}</div><div class="pullup-score"><div><small>이번 주차 합계</small><strong><span id="pullup-total">${stats.total}</span><span class="goal-denominator">${goal===null?'회':` / ${goal}회`}</span></strong></div><span class="goal-state ${stats.done?'success':''}">${goal===null?'목표 설정 전':stats.done?'목표 달성':`${stats.remaining}회 남음`}</span></div><div class="progress" aria-label="풀업 목표 달성률"><div class="progress-fill" style="width:${goal?Math.min(100,stats.total/goal*100):0}%"></div></div><div class="goal-setting"><label for="current-pullup-goal">${state.week}주차 목표 합계</label><input id="current-pullup-goal" class="input number-input" type="number" min="0" step="1" inputmode="numeric" data-pullup-goal="${state.week}" placeholder="설정" value="${goal??''}" aria-label="${state.week}주차 풀업 목표 합계"></div><p class="footnote">스쿼트·벤치·데드·OHP 훈련에서 기록한 풀업을 합산합니다. 세트 수 제한 없이 목표를 채우세요.</p><div class="pullup-session"><b>이 훈련 ${todayTotal}회</b><span class="small">${sets.length}세트 기록</span></div>${sets.length?`<div class="pullup-list">${sets.map((n,i)=>`<div class="pullup-set"><label for="pullup-set-${i}">${i+1}세트</label><input id="pullup-set-${i}" class="input number-input" type="number" min="0" step="1" inputmode="numeric" value="${n}" data-pullup-edit="${i}" aria-label="풀업 ${i+1}세트 횟수" ${s?.completedAt?'disabled':''}><span>회</span><button class="text-button" data-pullup-remove="${i}" aria-label="풀업 ${i+1}세트 삭제" ${s?.completedAt?'disabled':''}>삭제</button></div>`).join('')}</div>`:''}${!s?.completedAt?`<form id="pullup-form" class="pullup-entry"><label class="sr-only" for="pullup-new">완료한 풀업 횟수</label><input id="pullup-new" class="input" type="number" min="1" step="1" inputmode="numeric" placeholder="이번 세트 횟수" required><button class="btn primary" type="submit">기록 + 1분</button></form>`:''}<div class="record-note"><span>지난 훈련 ${best.lastSets?.length?best.lastSets.join(' · ')+'회':'기록 없음'}</span><span>최고 한 세트 <b>${best.maxSet||0}회</b> · 최고 한 훈련 <b>${best.maxSession||0}회</b></span></div></section>`;}
+function renderToday(){const s=get(),p=plan(s),done=!!s?.completedAt;$('#view-today').innerHTML=`<div class="row spread"><div><div class="eyebrow">CYCLE ${String(state.cycle).padStart(2,'0')} · WEEK ${state.week}</div><h1 class="page-title" id="today-title">오늘의 훈련</h1></div>${badge(`${M.weekCompleted(state)} / 4 완료`,'gray')}</div>${modeButtons()}${sessionStrip()}${state.migrationNotice?`<div class="info-box migration-note">${esc(state.migrationNotice)}<button class="text-button" data-act="dismiss-migration">확인</button></div>`:''}<div class="section-head"><h2>${esc(p.d.label)}</h2>${badge(done?'저장 완료':p.scheme.name,done?'':'gray')}</div><div class="card special"><div class="card-top"><div><div class="eyebrow">마지막 메인세트${p.scheme.pr?' · PR':''}</div><div class="metric">${L.nfmt(p.main[2].kg)}<small> kg × ${p.main[2].reps}${p.scheme.pr?'+':''}회</small></div></div>${badge('TM '+L.nfmt(p.tm)+'kg')}</div><p>${p.scheme.pr?'마지막 세트의 실제 반복수를 기록하세요.':'모든 메인세트는 정해진 횟수에서 마칩니다.'}</p></div><div class="session-clock"><div><small>총 운동 시간</small><strong data-elapsed>${durationText(M.sessionDuration(s))}</strong></div><button class="btn outline" data-act="session-toggle" ${done?'disabled':''}>${s?.runningSince?'시간 일시정지':'시간 시작'}</button></div><div class="section-head"><h3>워밍업</h3>${badge('휴식 1분','gray')}</div>${rows(p.warm,s,'warm')}<div class="section-head"><h3>메인 운동</h3>${badge('휴식 3분','gray')}</div>${rows(p.main,s,'main')}<p class="footnote">완료 체크 시 휴식 타이머가 시작됩니다. 중량은 바벨 포함입니다.</p>${addonPanel(s,p)}${pullupPanel(s)}<details class="card session-notes"><summary>컨디션 · 메모</summary><div class="grid2"><label><span class="field-label">마지막 메인세트 RIR</span><select class="input" data-field="rir" ${done?'disabled':''}><option value="">미입력</option>${[0,1,2,3,4].map(n=>`<option value="${n}" ${String(s?.rir??'')===String(n)?'selected':''}>${n===4?'4회 이상':n+'회'}</option>`).join('')}</select></label><label><span class="field-label">컨디션</span><select class="input" data-field="condition" ${done?'disabled':''}>${['좋음','보통','나쁨'].map(x=>`<option ${x===(s?.condition||'보통')?'selected':''}>${x}</option>`).join('')}</select></label></div><label class="field-label" for="session-notes">메모</label><textarea id="session-notes" class="input" data-notes rows="3" ${done?'disabled':''}>${esc(s?.notes||'')}</textarea></details><button class="btn primary full complete-button" data-act="complete" ${done?'disabled':''}>${done?'훈련 기록 저장됨':'훈련 완료 · 저장'}</button><p class="footnote center">네 종목을 완료하면 다음 주차로 자동 이동합니다.</p>`;}
+function renderWeek(){const stats=M.weekPullups(state);$('#view-week').innerHTML=`<div class="eyebrow">PROGRAM OVERVIEW</div><h1 class="page-title">주차 진행</h1><p class="subtitle">${L.modeLabel(state.mode)} · 사이클 ${state.cycle} · ${state.week}주차</p><div class="card"><div class="row spread"><h3>웨이트 ${M.weekCompleted(state)} / 4</h3>${badge(L.scheme(state.mode,state.week).name)}</div>${L.daysForMode(state.mode).map(d=>{const s=M.getSession(state,d.id),tm=(s?.tm||state.tm)[d.lift||d.id],r=L.mainSets(s?.mode||state.mode,s?.week||state.week,tm)[2];return `<div class="week-card"><div class="week-number">${L.LIFTS[d.id].short}</div><div class="week-main"><b>${esc(d.label)}</b><p>${L.nfmt(r.kg)}kg × ${r.reps}${r.pr?'+':''}회 · ${s?.completedAt?'완료':s?.startedAt?'진행 중':'대기'}</p></div><button class="btn tiny" data-open-lift="${d.id}">${s?.completedAt?'기록 보기':'열기'}</button></div>`;}).join('')}</div><div class="card"><h3>풀업 주차 합계</h3><div class="metric">${stats.total}<small> / ${stats.goal??'목표 미설정'}${stats.goal===null?'':'회'}</small></div><p>풀업 목표와 보조운동 선택은 주차 이동 조건에 포함되지 않습니다.</p></div><div class="card"><h3>주차별 메인세트</h3><div class="table-scroll"><table><thead><tr><th>주차</th><th>TM 비율</th><th>반복</th></tr></thead><tbody>${[1,2,3,...(state.settings.deload?[4]:[])].map(w=>{const sc=L.scheme(state.mode,w);return `<tr class="${w===state.week?'current-week':''}"><td>${w===4?'디로드':w+'주차'}</td><td>${sc.pcts.map(pctText).join(' / ')}%</td><td>${sc.reps.map((r,i)=>r+(sc.pr&&i===2?'+':'')).join(' / ')}</td></tr>`;}).join('')}</tbody></table></div><p class="footnote">+는 마지막 세트의 PR 반복입니다.${state.mode==='351'?' 2주차는 5회 고정입니다.':''}</p></div><button class="btn outline full" data-act="force-next">다음 주차로 직접 이동</button>`;}
+function timerRemaining(t){return !t?0:t.running?Math.max(0,t.endAt-Date.now()):Math.max(0,t.remainingMs||0);}
+function renderTimers(){const t=state.timer;$('#view-timers').innerHTML=`<div class="eyebrow">REST & INTERVAL</div><h1 class="page-title">타이머</h1><div class="timer-card"><div class="timer-description">${esc(t?.label||'타이머를 선택하세요')}</div><div class="timer-digits" id="timer-digits">${secText(timerRemaining(t)/1000)}</div><div class="timer-description" id="timer-phase"></div><div class="timer-controls">${t?`<button class="btn" data-timer-action="toggle" id="timer-pause">${t.running?'일시정지':t.finished?'다시 시작':'계속'}</button><button class="btn outline" data-timer-action="plus">+30초</button><button class="btn outline" data-timer-action="stop">종료</button>`:''}</div></div><div class="grid2"><button class="timer-mode-card" data-rest="60"><div><b>1분 휴식</b><small>워밍업 · 풀업</small></div><b>01:00</b></button><button class="timer-mode-card" data-rest="180"><div><b>3분 휴식</b><small>메인 · 조커 · FSL</small></div><b>03:00</b></button></div><section class="card tabata-card"><h3>타바타</h3><div class="grid2">${[['tabWork','운동 (초)',5,180],['tabRest','휴식 (초)',0,120],['tabRounds','라운드',1,30],['tabSets','세트',1,10],['tabBetween','세트 간 휴식 (초)',0,300]].map(([k,label,min,max])=>`<label><span class="field-label">${label}</span><input class="input" type="number" min="${min}" max="${max}" step="1" inputmode="numeric" data-setting="${k}" value="${state.settings[k]}"></label>`).join('')}</div><p class="footnote">준비 5초 포함. 마지막 라운드 이후 휴식은 제외합니다.</p><button class="btn primary full" data-act="tabata">타바타 시작</button></section><p class="info-box">화면을 다시 열면 실제 경과 시간으로 타이머를 맞춥니다. 화면이 잠긴 동안의 소리·진동 알림은 기기 설정에 따라 울리지 않을 수 있습니다.</p>`;}
+function historyTitle(r){return r.day?L.dayById(r.day)?.label||r.day:'훈련';}
+function renderHistory(){const records=state.history.slice().sort((a,b)=>(b.timestamp||b.completedAt||0)-(a.timestamp||a.completedAt||0));$('#view-history').innerHTML=`<div class="eyebrow">TRAINING ARCHIVE</div><div class="row spread"><h1 class="page-title">훈련 기록</h1>${badge(records.length+'회','gray')}</div><div class="btn-group export-actions"><button class="btn outline" data-act="export-json">JSON 백업</button><button class="btn outline" data-act="export-csv">CSV 저장</button></div>${records.length?records.map(r=>`<details class="card history-card"><summary><span><b>${esc(historyTitle(r))}</b><small>${esc(r.date||'')} · ${L.modeLabel(r.mode)} · ${r.week}주차</small></span><span class="history-time">${durationText(r.durationMs||r.elapsedMs||0)}</span></summary><div class="history-body"><p>${esc(r.summary?.last||r.summary?.activity||'메인 기록')}</p>${r.pullupSets?.length?`<p>풀업 ${r.pullupSets.join(' / ')}회 · 합계 ${r.pullupSets.reduce((a,n)=>a+Number(n||0),0)}회</p>`:''}${r.summary?.details?`<pre>${esc(r.summary.details)}</pre>`:r.actual?`<pre>${esc(Object.entries(r.actual).map(([k,v])=>k+': '+v+'회').join('\n'))}</pre>`:''}${r.notes?`<p>메모: ${esc(r.notes)}</p>`:''}</div></details>`).join(''):'<div class="card empty-state"><h3>첫 훈련을 기록해 보세요</h3><p>훈련 완료를 누르면 기록이 여기에 쌓입니다.</p></div>'}`;}
+function renderSettings(){$('#view-settings').innerHTML=`<div class="eyebrow">531 TRAIN · V6</div><h1 class="page-title">설정</h1><section class="card"><h3>프로그램</h3>${modeButtons()}<p>방식을 바꾸면 새 사이클 1주차로 시작합니다. 기존 기록과 TM은 보관됩니다.</p><div class="grid2"><label><span class="field-label">사이클</span><input class="input" type="number" min="1" max="999" data-position="cycle" value="${state.cycle}"></label><label><span class="field-label">주차</span><select class="input" data-position="week">${[1,2,3,4].map(w=>`<option value="${w}" ${state.week===w?'selected':''}>${w===4?'4 · 디로드':w+'주차'}</option>`).join('')}</select></label></div><label class="toggle-row"><span>4주차 디로드 포함</span><input class="toggle" type="checkbox" data-toggle="deload" ${state.settings.deload?'checked':''}></label><label class="toggle-row"><span>새 사이클 TM 자동 증량<small class="block small">스쿼트·데드 +5kg / 벤치·OHP +2.5kg</small></span><input class="toggle" type="checkbox" data-toggle="autoTM" ${state.settings.autoTM?'checked':''}></label></section><section class="card"><h3>Training Max</h3>${Object.entries(L.LIFTS).map(([id,l])=>`<div class="settings-tm"><label for="tm-${id}">${l.label} (kg)</label><input id="tm-${id}" class="input" type="number" min="20" max="500" step="2.5" inputmode="decimal" data-tm="${id}" value="${state.tm[id]}"></div>`).join('')}<p>이미 시작한 훈련은 시작 당시 TM을 유지합니다. 변경한 TM은 다음 새 훈련부터 적용됩니다.</p></section><section class="card"><h3>풀업 주차별 목표</h3><p>각 주차에 네 종목의 훈련을 합쳐 채울 횟수입니다. 세트 수는 자유입니다.</p>${[1,2,3,4].map(w=>`<div class="settings-tm"><label for="pullup-target-${w}">${w===4?'디로드':w+'주차'} 목표 (회)</label><input id="pullup-target-${w}" class="input" type="number" min="0" step="1" inputmode="numeric" data-pullup-goal="${w}" placeholder="직접 설정" value="${state.settings.pullupTargets[w]??''}"></div>`).join('')}<p class="footnote">목표는 다음 사이클에도 유지됩니다. 빈칸 또는 0은 목표 미설정입니다.</p></section><section class="card"><h3>알림 · 설치</h3><label class="toggle-row"><span>타이머 소리</span><input class="toggle" type="checkbox" data-toggle="sound" ${state.settings.sound?'checked':''}></label><label class="toggle-row"><span>타이머 진동</span><input class="toggle" type="checkbox" data-toggle="vibrate" ${state.settings.vibrate?'checked':''}></label><button class="btn outline full" data-act="install">홈 화면에 설치</button><p>타이머 시간은 복귀 시 복원됩니다. 잠금 화면에서 정확한 알림은 보장되지 않습니다.</p></section><section class="card"><h3>기록 백업 · 복원</h3><p>기록은 사용하는 브라우저에 저장됩니다. 앱 업데이트 전 JSON 백업을 권장합니다.</p><div class="btn-group"><button class="btn primary" data-act="export-json">JSON 백업</button><button class="btn outline" data-act="export-csv">CSV 기록</button></div><label class="field-label" for="import-json">JSON 백업 복원</label><input class="input" id="import-json" type="file" accept="application/json,.json"><p class="footnote">같은 주소와 브라우저로 열면 기존 저장 기록을 이어서 사용합니다.</p></section>`;}
+function startTimer(kind,seconds,label){let phases=null,sec=Number(seconds);if(kind==='tabata'){const c=state.settings;phases=L.buildTabata(c.tabWork,c.tabRest,c.tabRounds,c.tabSets,c.tabBetween);sec=phases.reduce((a,p)=>a+p.seconds,0);label='타바타';}if(!(sec>0))return;state.timer={kind,label:label||'휴식',durationMs:sec*1000,remainingMs:sec*1000,endAt:Date.now()+sec*1000,running:true,finished:false,alerted:false,phases};lastPhase=-1;primeAudio();requestWake();save();if(currentTab==='timers')renderTimers();tick();}
+function stopTimer(){state.timer=null;releaseWake();save();tick();}
+function timerControl(cmd){const t=state.timer;if(!t)return;if(cmd==='stop'){stopTimer();if(currentTab==='timers')renderTimers();return;}if(cmd==='toggle'){if(t.running){t.remainingMs=timerRemaining(t);t.running=false;releaseWake();}else{t.remainingMs=t.finished?t.durationMs:t.remainingMs;t.endAt=Date.now()+t.remainingMs;t.running=true;t.finished=false;t.alerted=false;primeAudio();requestWake();}}if(cmd==='plus'){t.remainingMs=timerRemaining(t)+30000;t.durationMs+=30000;t.endAt=Date.now()+t.remainingMs;t.finished=false;t.alerted=false;}save();if(currentTab==='timers')renderTimers();tick();}
+async function requestWake(){try{if(!wakeLock&&navigator.wakeLock&&document.visibilityState==='visible')wakeLock=await navigator.wakeLock.request('screen');}catch(e){}}
+async function releaseWake(){try{if(wakeLock){await wakeLock.release();wakeLock=null;}}catch(e){wakeLock=null;}}
+function primeAudio(){if(!state.settings.sound)return;try{const AC=window.AudioContext||window.webkitAudioContext;if(!AC)return;audioContext=audioContext||new AC();if(audioContext.state==='suspended')audioContext.resume().catch(()=>{});}catch(e){}}
+function beep(){if(!state.settings.sound)return;try{primeAudio();if(!audioContext)return;const o=audioContext.createOscillator(),g=audioContext.createGain();o.frequency.value=660;g.gain.setValueAtTime(.12,audioContext.currentTime);g.gain.exponentialRampToValueAtTime(.001,audioContext.currentTime+.3);o.connect(g).connect(audioContext.destination);o.start();o.stop(audioContext.currentTime+.31);}catch(e){}}
+function tick(){all('[data-elapsed]').forEach(el=>el.textContent=durationText(M.sessionDuration(get())));const t=state.timer,dock=$('#floating-timer');document.body.classList.toggle('timer-visible',!!t);if(!t){dock.hidden=true;return;}let left=timerRemaining(t);if(t.running&&left<=0){t.running=false;t.remainingMs=0;t.finished=true;releaseWake();if(!t.alerted){t.alerted=true;beep();try{if(state.settings.vibrate&&navigator.vibrate)navigator.vibrate([120,90,120]);}catch(e){}notify(t.label+' 완료');}save();}let detail=t.finished?'완료':t.running?'진행 중':'일시정지';if(t.kind==='tabata'&&t.phases){const phase=L.getPhase(t.phases,(t.durationMs-left)/1000);detail=phase.name+' · '+secText(phase.remaining);if(t.running&&lastPhase!==-1&&lastPhase!==phase.index)beep();lastPhase=phase.index;}dock.hidden=false;$('#ft-label').textContent=t.label;$('#ft-time').textContent=secText(left/1000);$('#ft-phase').textContent=detail;const label=t.running?'일시정지':t.finished?'다시 시작':'계속';all('[data-timer-action="toggle"]').forEach(x=>x.textContent=label);if($('#timer-digits'))$('#timer-digits').textContent=secText(left/1000);if($('#timer-phase'))$('#timer-phase').textContent=detail;}
+function validReps(value,allowEmpty=true){return allowEmpty&&value===''||value!==''&&Number.isSafeInteger(Number(value))&&Number(value)>=0;}
+function rowFor(id,s){const p=plan(s);return [...p.warm,...p.main,...p.extra].find(r=>r.id===id);}
+function checkSet(input){const s=get(true);if(s.completedAt)return;const r=rowFor(input.dataset.check,s);if(!r)return;if(input.checked&&r.pr&&(s.actual[r.id]===undefined||s.actual[r.id]==='')){input.checked=false;notify('PR 세트의 실제 횟수를 먼저 입력하세요.');return;}M.startSession(state,s);s.checked[r.id]=input.checked;if(input.checked&&(s.actual[r.id]===undefined||s.actual[r.id]===''))s.actual[r.id]=r.reps;save();if(input.checked)startTimer('rest',r.rest,r.pr?'PR 후 휴식':r.id.startsWith('warm')||r.id==='empty'?'워밍업 휴식':r.id.startsWith('fsl')?'FSL 휴식':r.id.startsWith('joker')?'조커 휴식':'메인 휴식');renderToday();tick();}
+function finish(){const s=get(true);if(s.completedAt)return;const missing=plan(s).main.filter(r=>!s.checked[r.id]);if(missing.length&&!confirm(`메인 ${missing.length}세트가 미완료입니다. 수행한 내용만 저장하고 이 훈련을 마칠까요?`))return;const result=M.finishSession(state,state.activeLift);stopTimer();const saved=save();renderToday();window.scrollTo({top:0,behavior:'instant'});if(saved)notify(result.advanced?'네 종목 저장 완료 · 다음 주차로 이동했습니다.':'훈련 기록을 저장했습니다.');}
+function download(name,type,data){const u=URL.createObjectURL(new Blob([data],{type})),a=document.createElement('a');a.href=u;a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),1000);}
+function exportJSON(){download((storageError&&rawStored!==null?'531_train_recovery_':'531_train_backup_')+new Date().toISOString().slice(0,10)+'.json','application/json',storageError&&rawStored!==null?rawStored:JSON.stringify(state,null,2));}
+function exportCSV(){const q=x=>'"'+String(x??'').replace(/"/g,'""')+'"',data=[['날짜','프로그램','사이클','주차','운동','운동 시간(분)','메인 마지막','보조운동1','풀업 세트','풀업 합계','메모']];state.history.forEach(r=>data.push([r.date,L.modeLabel(r.mode),r.cycle,r.week,historyTitle(r),((r.durationMs||r.elapsedMs||0)/60000).toFixed(1),r.summary?.last,r.choice,(r.pullupSets||[]).join('/'),(r.pullupSets||[]).reduce((a,n)=>a+Number(n||0),0),r.notes]));download('531_train_history.csv','text/csv;charset=utf-8','\uFEFF'+data.map(r=>r.map(q).join(',')).join('\r\n'));}
+function changeMode(mode){if(mode===state.mode)return;if(!confirm(`${L.modeLabel(mode)}의 새 사이클 1주차로 시작할까요? 기존 기록과 TM은 보관됩니다.`))return;M.setMode(state,mode);const saved=save();render();if(saved)notify(L.modeLabel(mode)+' 새 사이클 시작');}
+function pauseAll(){Object.values(state.sessions).forEach(s=>{if(s.runningSince)M.pauseSession(s);});}
+function handleAction(act){if(act==='session-toggle'){const s=get(true);if(s.completedAt)return;s.runningSince?M.pauseSession(s):M.startSession(state,s);save();renderToday();tick();return;}if(act==='complete')return finish();if(act==='export-json')return exportJSON();if(act==='export-csv')return exportCSV();if(act==='tabata')return startTimer('tabata');if(act==='dismiss-migration'){delete state.migrationNotice;save();renderToday();return;}if(act==='force-next'){if(confirm('미완료 훈련이 있어도 다음 주차로 이동할까요? 기존 기록은 보관됩니다.')){pauseAll();M.advanceWeek(state);stopTimer();save();render();}return;}if(act==='install'){if(installPrompt){installPrompt.prompt();installPrompt.userChoice.then(()=>{installPrompt=null;});}else notify('Chrome 메뉴의 앱 설치 또는 Safari 공유 메뉴의 홈 화면에 추가를 선택하세요.');}}
+document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b||b.disabled)return;if(b.dataset.tab)return setTab(b.dataset.tab);if(b.dataset.lift){state.activeLift=b.dataset.lift;save();render();return;}if(b.dataset.openLift){state.activeLift=b.dataset.openLift;save();setTab('today');return;}if(b.dataset.mode)return changeMode(b.dataset.mode);if(b.dataset.choice){const s=get(true);if(s.completedAt)return;const c=b.dataset.choice;if(!plan(s).scheme.pr&&c.startsWith('joker'))return;s.choice=c;save();renderToday();tick();return;}if(b.dataset.timerAction)return timerControl(b.dataset.timerAction);if(b.dataset.rest)return startTimer('rest',Number(b.dataset.rest),'휴식');if(b.hasAttribute('data-pullup-remove')){const s=get();if(s&&!s.completedAt){s.pullupSets.splice(Number(b.dataset.pullupRemove),1);save();renderToday();tick();}return;}if(b.dataset.act)handleAction(b.dataset.act);});
+document.addEventListener('submit',e=>{if(e.target.id!=='pullup-form')return;e.preventDefault();const input=$('#pullup-new'),n=Number(input.value);if(!validReps(input.value,false)||n<1){notify('완료한 풀업 횟수를 1 이상의 정수로 입력하세요.');return;}const s=get(true);if(s.completedAt)return;M.startSession(state,s);s.pullupSets.push(n);startTimer('rest',60,'풀업 휴식');const saved=save();renderToday();tick();if(saved)notify(`풀업 ${n}회 저장 · 이번 주차 ${M.weekPullups(state).total}회`);});
+document.addEventListener('input',e=>{const t=e.target;if(t.matches('[data-reps]')){if(!validReps(t.value)){t.setCustomValidity('0 이상의 정수를 입력하세요.');return;}t.setCustomValidity('');const s=get(true);if(s.completedAt)return;s.actual[t.dataset.reps]=t.value===''?'':Number(t.value);M.startSession(state,s);save();return;}if(t.matches('[data-notes]')){const s=get(true);if(!s.completedAt){s.notes=t.value;save();}}});
+document.addEventListener('change',async e=>{const t=e.target;if(t.matches('[data-check]'))return checkSet(t);if(t.matches('[data-pullup-goal]')){if(!validReps(t.value)){notify('목표는 0 이상의 정수로 입력하세요.');render();return;}state.settings.pullupTargets[t.dataset.pullupGoal]=t.value===''||Number(t.value)===0?null:Number(t.value);save();render();return;}if(t.matches('[data-pullup-edit]')){if(!validReps(t.value,false)){notify('횟수는 0 이상의 정수로 입력하세요.');renderToday();return;}const s=get();if(s&&!s.completedAt){s.pullupSets[Number(t.dataset.pullupEdit)]=Number(t.value);save();renderToday();tick();}return;}if(t.matches('[data-field]')){const s=get(true);if(!s.completedAt){s[t.dataset.field]=t.value;save();}return;}if(t.matches('[data-toggle]')){state.settings[t.dataset.toggle]=t.checked;save();return;}if(t.matches('[data-tm]')){const n=Number(t.value);if(Number.isFinite(n)&&n>=20&&n<=500){state.tm[t.dataset.tm]=L.roundLoad(n);if(save())notify('TM 저장 · 다음 새 훈련부터 적용');}else notify('TM은 20~500kg 범위로 입력하세요.');renderSettings();return;}if(t.matches('[data-position]')){const k=t.dataset.position,n=Number(t.value);if(Number.isInteger(n)&&n>=1&&n<=(k==='week'?4:999)){if(n!==state[k]&&confirm('진행 위치를 변경할까요? 기존 기록은 보관됩니다.')){pauseAll();state[k]=n;state.activeLift=M.nextOpenLift(state);stopTimer();save();}}renderSettings();return;}if(t.matches('[data-setting]')){const ranges={tabWork:[5,180],tabRest:[0,120],tabRounds:[1,30],tabSets:[1,10],tabBetween:[0,300]},k=t.dataset.setting,n=Number(t.value),range=ranges[k];if(range&&Number.isInteger(n)&&n>=range[0]&&n<=range[1]){state.settings[k]=n;save();}else notify('타이머 입력값의 범위를 확인하세요.');renderTimers();return;}if(t.id==='import-json'&&t.files?.[0]){try{const raw=JSON.parse(await t.files[0].text());if(!validState(raw))throw Error('invalid');if(!confirm('현재 기록을 이 JSON 백업으로 복원할까요?'))return;const restored=M.migrateState(raw);state=restored;storageError='';rawStored=null;const saved=save();setTab('today');if(saved)notify('백업을 복원했습니다.');}catch(err){notify('백업 파일 형식을 확인해 주세요.');}finally{t.value='';}}});
 $('#quick-settings').addEventListener('click',()=>setTab('settings'));
 window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();installPrompt=e;});
-window.addEventListener('appinstalled',()=>{installPrompt=null;notify('홈 화면에 설치되었습니다.');});
-document.addEventListener('visibilitychange',()=>{updateLiveUI();if(document.visibilityState==='visible'&&state.timer?.running)requestWake()});
-window.addEventListener('pageshow',updateLiveUI);
+document.addEventListener('visibilitychange',()=>{tick();if(document.visibilityState==='visible'&&state.timer?.running)requestWake();});
+window.addEventListener('pageshow',tick);
 window.addEventListener('beforeunload',save);
-setInterval(updateLiveUI,500);
-if('serviceWorker'in navigator&&['https:','http:'].includes(location.protocol))navigator.serviceWorker.register('./sw.js').catch(()=>{});
-renderCurrent();
+setInterval(tick,500);
+if('serviceWorker' in navigator&&['http:','https:'].includes(location.protocol))navigator.serviceWorker.register('./sw.js').catch(()=>{});
+save();render();
 })();
